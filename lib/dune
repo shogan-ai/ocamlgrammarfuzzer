@@ -1,2 +1,3 @@
 (library
- (name grammarfuzzer))
+ (name grammarfuzzer)
+ (libraries utils menhirSdk lrijkstra_utils))

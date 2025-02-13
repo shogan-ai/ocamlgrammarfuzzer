@@ -1,0 +1,5 @@
+(library
+  (name fix)
+  (synopsis "An on-demand, incremental fixed point computation algorithm"))
+
+(env (dev (flags (:standard -w -67))))
