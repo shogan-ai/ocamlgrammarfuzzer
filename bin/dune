@@ -1,0 +1,4 @@
+(executable
+ (public_name grammarfuzzer)
+ (name main)
+ (libraries grammarfuzzer))
