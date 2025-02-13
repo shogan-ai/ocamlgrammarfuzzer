@@ -2,12 +2,16 @@
   (name embed)
   (modules embed))
 
+(library
+  (name ocaml_grammar)
+   (modules ocaml_grammar))
+
 (rule
-  (targets interpreter_data.ml)
+  (targets ocaml_grammar.ml)
   (deps    parser_raw.cmly)
   (action
     (with-stdout-to %{targets}
-       (run %{exe:./embed.exe} grammar=parser_raw.cmly))))
+       (run %{exe:./embed.exe} content=parser_raw.cmly))))
 
 (library
   (name ocaml_parser)
