@@ -488,6 +488,17 @@ and find_addr f a w ss i =
   else
     find_addr f a w ss (i + 1)
 
+let rec find_map f = function
+  | N -> None
+  | C (a, w, ss) ->
+    find_map_addr f a w ss 0
+
+and find_map_addr f a w ss i =
+  match if w land (1 lsl i) = 0 then None else f (a + i) with
+  | Some _ as result -> result
+  | None when i = word_size - 1 -> find_map f ss
+  | None -> find_map_addr f a w ss (i + 1)
+
 let rec allocate result = function
   | N ->
     result := 0;

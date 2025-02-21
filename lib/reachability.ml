@@ -197,8 +197,8 @@ struct
             ) rhs [lr1, []]
         in
         List.iter (fun (source, steps) ->
-            Vector.set_cons table (Transition.find_goto source lhs)
-              { production; lookahead; steps; state=lr1 }
+            table.@(Transition.find_goto source lhs) <-
+              List.cons { production; lookahead; steps; state=lr1 }
           ) states
       end
 
@@ -249,7 +249,7 @@ struct
       Index.iter Lr1.n
         (fun lr1 -> List.iter (add_reduction lr1) (get_reductions lr1))
 
-    let goto_transition tr = Vector.get table tr
+    let goto_transition tr = table.:(tr)
   end
 
   (* ---------------------------------------------------------------------- *)
@@ -312,10 +312,10 @@ struct
       let acc = ref acc in
       begin match Node.prj node with
         | L lr1 ->
-          Gr.visit_lr1 (fun n -> acc := Vector.get classes n @ !acc) lr1
+          Gr.visit_lr1 (fun n -> acc := classes.:(n) @ !acc) lr1
         | R edge ->
           List.iter (fun {Unreduce. lookahead; state; _} ->
-              let base = Vector.get classes (Node.inj_l state) in
+              let base = classes.:(Node.inj_l state) in
               (* Comment the code below to have a partial order on partitions
                  (remove the ↑Z in equation (6) *)
               let base =
@@ -335,7 +335,7 @@ struct
         IndexRefine.partition (List.fold_left classes_of [] nodes)
       in
       match nodes with
-      | [node] -> Vector.set classes node coarse_classes
+      | [node] -> classes.:(node) <- coarse_classes
       | nodes ->
         List.iter begin fun node ->
           match Node.prj node with
@@ -346,19 +346,18 @@ struct
               (fun {Unreduce. lookahead; _} ->
                  coarse := IndexSet.union lookahead !coarse)
               (Unreduce.goto_transition e);
-            Vector.set classes node (
+            classes.:(node) <-
               coarse_classes
               |> List.map (IndexSet.inter !coarse)
               |> IndexRefine.partition
-            )
         end nodes;
         List.iter begin fun node ->
           match Node.prj node with
           | R _ -> ()
           | L lr1 ->
             let acc = ref [] in
-            Gr.visit_lr1 (fun n -> acc := Vector.get classes n @ !acc) lr1;
-            Vector.set classes node (IndexRefine.partition !acc)
+            Gr.visit_lr1 (fun n -> acc := classes.:(n) @ !acc) lr1;
+            classes.:(node) <- IndexRefine.partition !acc
         end nodes
 
     let () = Scc.rev_topological_iter visit_scc
@@ -369,7 +368,7 @@ struct
         match Lr1.incoming lr1 with
         | Some sym when Symbol.is_nonterminal sym -> ()
         | None | Some _ ->
-          Vector.set classes (Node.inj_l lr1) [Terminal.all]
+          classes.:(Node.inj_l lr1) <- [Terminal.all]
       )
 
     (* We now have the final approximation.
@@ -379,10 +378,10 @@ struct
     let classes = Vector.map Array.of_list classes
 
     let for_edge nte =
-      Vector.get classes (Node.inj_r nte)
+      classes.:(Node.inj_r nte)
 
     let for_lr1 st =
-      Vector.get classes (Node.inj_l st)
+      classes.:(Node.inj_l st)
 
     (* Precompute the singleton partitions, e.g. { {t}, T/{t} } for each t *)
     let t_singletons =
@@ -398,7 +397,7 @@ struct
     *)
     let pre_transition tr =
       match Symbol.desc (Transition.symbol tr) with
-      | T t -> Vector.get t_singletons t
+      | T t -> t_singletons.:(t)
       | N _ -> for_lr1 (Transition.source tr)
 
     (* Just after taking a transition [tr], the lookahead has to belong to
@@ -486,11 +485,11 @@ struct
       let rev_index = Vector.make' Inner.n
           (fun () -> let dummy = Index.of_int n 0 in (dummy, dummy))
 
-      let define ix = Vector.get rev_index ix
+      let define ix = rev_index.:(ix)
 
       let () =
         Hashtbl.iter
-          (fun pair index -> Vector.set rev_index index (unpack pair))
+          (fun pair index -> rev_index.:(index) <- unpack pair)
           node_table
     end
   end
@@ -555,19 +554,19 @@ struct
 
     let pre_classes t = match split t with
       | L tr -> Classes.pre_transition tr
-      | R ix -> Vector.get table_pre ix
+      | R ix -> table_pre.:(ix)
 
     let post_classes t = match split t with
       | L tr -> Classes.post_transition tr
-      | R ix -> Vector.get table_post ix
+      | R ix -> table_post.:(ix)
 
     let () =
       (* Nodes are allocated in topological order.
          When iterating over all nodes, children are visited before parents. *)
       Index.iter Inner.n @@ fun node ->
       let l, r = define node in
-      Vector.set table_pre node (pre_classes l);
-      Vector.set table_post node (post_classes r)
+      table_pre.:(node) <- pre_classes l;
+      table_post.:(node) <- post_classes r
 
     let split i = match split i with
       | L _ as result -> result
@@ -725,7 +724,7 @@ struct
 
     let cost t =
       let node, offset = decode_offset t in
-      (Vector.get table node).(offset)
+      table.:(node).(offset)
   end
 
   (* ---------------------------------------------------------------------- *)
@@ -909,8 +908,8 @@ struct
         | Some coerce_pre ->
           let post' = Tree.post_classes node' in
           let coerce_post = Coercion.infix post' post ~lookahead in
-          Vector.set_cons dependents node'
-            (Leaf (tr, coerce_pre, coerce_post.Coercion.forward))
+          dependents.@(node') <-
+            List.cons (Leaf (tr, coerce_pre, coerce_post.Coercion.forward))
       end non_nullable
 
     (* Record dependencies on a inner node. *)
@@ -923,8 +922,8 @@ struct
       let coercion = Coercion.infix c1 c2 in
       let dep = Inner (node, coercion) in
       assert (Array.length c2 = Array.length coercion.Coercion.backward);
-      Vector.set_cons dependents l dep;
-      Vector.set_cons dependents r dep
+      dependents.@(l) <- List.cons dep;
+      dependents.@(r) <- List.cons dep
 
     (* A graph representation suitable for the DataFlow solver *)
     module Graph = struct
@@ -981,7 +980,7 @@ struct
             let parent_index = Cells.encode (Tree.inject parent) in
             if l = node then (
               (* The left term has been updated *)
-              let r_costs = Vector.get Cells.table r in
+              let r_costs = Cells.table.:(r) in
               let offset_of = Cells.offset r in
               for i_post' = 0 to Array.length (Tree.post_classes r) - 1 do
                 let r_cost = Array.fold_left
@@ -999,7 +998,7 @@ struct
               match inner.Coercion.backward.(i_pre) with
               | -1 -> ()
               | l_post ->
-                let l_costs = Vector.get Cells.table l in
+                let l_costs = Cells.table.:(l) in
                 let offset_of = Cells.offset l in
                 for i_pre = 0 to Array.length (Tree.pre_classes l) - 1 do
                   let l_cost = l_costs.(offset_of i_pre l_post) in
@@ -1009,7 +1008,7 @@ struct
                 done
             )
         in
-        List.iter update_dep (Vector.get dependents node)
+        List.iter update_dep dependents.:(node)
     end
 
     module Property = struct
@@ -1023,11 +1022,11 @@ struct
       (* Access the cost table using cells *)
       let get index =
         let node, offset = Cells.decode_offset index in
-        (Vector.get Cells.table node).(offset)
+        Cells.table.:(node).(offset)
 
       let set index v =
         let node, offset = Cells.decode_offset index in
-        (Vector.get Cells.table node).(offset) <- v
+        Cells.table.:(node).(offset) <- v
     end
 
     module MarkMap = struct
@@ -1046,11 +1045,11 @@ struct
 
       let get var =
         let node, cell = Cells.decode_offset var in
-        Bytes.get (Vector.get data node) cell <> '\x00'
+        Bytes.get data.:(node) cell <> '\x00'
 
       let set var value =
         let node, cell = Cells.decode_offset var in
-        Bytes.set (Vector.get data node) cell
+        Bytes.set data.:(node) cell
           (if value then '\x01' else '\x00')
     end
 

@@ -171,6 +171,7 @@ module type S1 = sig
   val filter_map : ('a element -> 'b element option) -> 'a t -> 'b t
   val split: 'a element -> 'a t -> 'a t * bool * 'a t
   val find : ('a element -> bool) -> 'a t -> 'a element
+  val find_map : ('a element -> 'b option) -> 'a t -> 'b option
 end
 
 module type S0 = sig
