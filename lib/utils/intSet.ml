@@ -475,6 +475,19 @@ let rec filter f = function
     else
       C (addr, !word, filter f ss)
 
+let rec find f = function
+  | N -> raise Not_found
+  | C (a, w, ss) ->
+    find_addr f a w ss 0
+
+and find_addr f a w ss i =
+  if w land (1 lsl i) <> 0 && f (a + i) then
+    (a + i)
+  else if i = word_size - 1 then
+    find f ss
+  else
+    find_addr f a w ss (i + 1)
+
 let rec allocate result = function
   | N ->
     result := 0;
