@@ -236,7 +236,15 @@ struct
     let set_to_string lrcs =
       string_of_indexset ~index:to_string lrcs
 
-    (* Step timing after computing the LRC set *)
+    let () =
+      let monotonous a =
+          for i = 0 to Array.length a - 2
+          do assert (IndexSet.compare_minimum a.(i) a.(i+1) < 0) done
+      in
+      Index.iter Lr1.n (fun lr1 -> monotonous (Reachability.Classes.for_lr1 lr1));
+      Index.iter Transition.goto (fun gt -> monotonous (Reachability.Classes.for_edge gt))
+
+    let () = Stopwatch.step time "Done with LrC, %d states (from %d Lr1 states)" (cardinal n) (cardinal Lr1.n)
   end
 
   module TrC = struct
@@ -264,20 +272,47 @@ struct
 
    (* Count goto transitions *)
 
-   module Goto = Const(struct
-       let cardinal =
-         let count = ref 0 in
-         Index.iter Transition.goto (fun gt ->
-             let n = Reachability.Tree.leaf (Transition.of_goto gt) in
-             (* Count the number of cells with a finite cost *)
-             count :=
-               Array.fold_left
-                 (fun acc i -> if i = max_int then acc else succ acc)
-                 !count
-                 Reachability.Cells.table.:(n)
-           );
-         !count
-   end)
+   let transitions_count = ref 0
+   let transitions_group = Vector.init Transition.goto begin fun gt ->
+       let source = Transition.source (Transition.of_goto gt) in
+       let target = Transition.target (Transition.of_goto gt) in
+       let edge_classes = Reachability.Classes.for_edge gt in
+       let costs =
+         Reachability.Cells.table.:(Reachability.Tree.leaf (Transition.of_goto gt))
+       in
+       Array.mapi begin fun pre _pre_class ->
+         let count = Array.length edge_classes in
+         let edge = ref (count - 1) in
+         let post_classes = Reachability.Classes.for_lr1 target in
+         let reachables = ref [] in
+         for post = Array.length post_classes - 1 downto 0 do
+           let post_class = post_classes.(post) in
+           let edges = ref IntSet.empty in
+           let mcost = ref max_int in
+           while !edge >= 0 &&
+                 IndexSet.compare_minimum edge_classes.(!edge) post_class >= 0
+           do
+             if IndexSet.quick_subset edge_classes.(!edge) post_class then (
+               let cost =
+                 costs.(Reachability.Cells.table_index
+                          ~post_classes:count ~pre ~post:!edge)
+               in
+               mcost := Int.min cost !mcost;
+               if cost < max_int then
+                 edges := IntSet.add !edge !edges;
+             );
+             decr edge
+           done;
+           if !mcost < max_int then (
+             push reachables (post, !mcost, !edges);
+             incr transitions_count;
+           )
+         done;
+         !reachables
+       end (Reachability.Classes.for_lr1 source)
+     end
+
+   module Goto = Const(struct let cardinal = !transitions_count end)
 
    module Any = Sum(Goto)(struct type n = shift let n = shift end)
    type any = Any.n
@@ -307,31 +342,24 @@ struct
 
    let () =
      let enum = Index.rev_enumerate Goto.n in
-     Index.rev_iter Transition.goto (fun gt ->
-         let tr = Transition.of_goto gt in
-         let srcs = LrC.first_lrc_of_lr1 (Transition.source tr) in
-         let tgts = LrC.first_lrc_of_lr1 (Transition.target tr) in
-         (* Classes of the transition *)
-         let pre_classes = Array.length (Reachability.Classes.pre_transition tr) in
-         let post_classes = Array.length (Reachability.Classes.post_transition tr) in
-         (* Compact cost matrix of the transition *)
-         let ccm = Reachability.Cells.table.:(Reachability.Tree.leaf tr) in
-         for pre = 0 to pre_classes - 1 do
-           for post = 0 to post_classes - 1 do
-             let i = Reachability.Cells.table_index ~post_classes ~pre ~post in
-             let cost = ccm.(i) in
-             if cost < max_int then
-               let gt' = enum () in
-               vcore.:(gt') <- gt;
-               vcost.:(gt') <- cost;
-               vpre.:(gt') <- pre;
-               vpost.:(gt') <- post;
-               let tr = of_goto gt' in
-               successors.@(LrC.index_shift srcs pre) <- IndexSet.add tr;
-               predecessors.@(LrC.index_shift tgts post) <- IndexSet.add tr;
-           done
-         done
-       )
+     Vector.rev_iteri begin fun gt classes ->
+       let tr = Transition.of_goto gt in
+       let srcs = LrC.first_lrc_of_lr1 (Transition.source tr) in
+       let tgts = LrC.first_lrc_of_lr1 (Transition.target tr) in
+       Array.iteri begin fun pre post_classes ->
+         List.iter begin fun (post, cost, _edges) ->
+           (*if cost < max_int then*)
+           let gt' = enum () in
+           vcore.:(gt') <- gt;
+           vcost.:(gt') <- cost;
+           vpre.:(gt') <- pre;
+           vpost.:(gt') <- post;
+           let tr = of_goto gt' in
+           successors.@(LrC.index_shift srcs pre) <- IndexSet.add tr;
+           predecessors.@(LrC.index_shift tgts post) <- IndexSet.add tr;
+         end post_classes
+       end classes
+     end transitions_group
 
     let core = Vector.get vcore
 
@@ -362,85 +390,79 @@ struct
 
     let successors = Vector.get successors
     let predecessors = Vector.get predecessors
+    let () = Stopwatch.step time "Done with TrC, %d goto transitions (from %d in Lr1)"
+        (cardinal goto) (cardinal Transition.goto)
   end
 
   module RedC = struct
-   let () = Stopwatch.step time "Construction of RedC set"
+    let () = Stopwatch.step time "Construction of RedC set"
 
-   type desc = {
-     path : TrC.any index list;
-     cost : int;
-     target : TrC.goto index;
-     lookaheads : Terminal.set;
-   }
+    type desc = {
+      path : TrC.any index list;
+      cost : int;
+      target : TrC.goto index;
+      lookaheads : Terminal.set;
+    }
 
-   let acc = ref []
+    let _pts ts = string_of_indexset ~index:Terminal.to_string ts
 
-   let rec simulate_reduction lookaheads lhs position cost path state =
-     if position > 0 then
-       IndexSet.iter (fun tr ->
-           simulate_reduction lookaheads lhs
-             (position - 1)
-             (cost + TrC.cost tr)
-             (tr :: path)
-             (TrC.source tr)
-         ) (TrC.predecessors state)
-     else
-       let pts ts = string_of_indexset ~index:Terminal.to_string ts in
-       match
-         IndexSet.find_map (fun tr ->
-             match TrC.split tr with
-             | R _ -> None
-             | L gt ->
-               if Index.equal (TrC.goto_symbol gt) lhs then
-                 let lookaheads' = LrC.lookaheads (TrC.target tr) in
-                 if IndexSet.quick_subset lookaheads' lookaheads then (
-                   if not (IndexSet.subset lookaheads' lookaheads) then (
-                     Printf.eprintf " %s\n<=\n %s\n?!\n" (pts lookaheads) (pts lookaheads')
-                   );
-                   Some gt
-                 ) else (
-                   assert (IndexSet.disjoint lookaheads lookaheads');
-                   None
-                 )
-               else None
-           ) (TrC.successors state)
-       with
-       | None ->
-         prerr_endline (Nonterminal.to_string lhs);
-         prerr_endline (pts lookaheads)
-       | Some target ->
-         push acc {path; cost; target; lookaheads}
+    let acc = ref []
 
-   let () = Index.iter LrC.n @@ fun lrc ->
-     let lookaheads = LrC.lookaheads lrc in
-     IndexSet.iter (fun red ->
-         let lookaheads =
-           Terminal.intersect (Reduction.lookaheads red) lookaheads
-         in
-         let prod = Reduction.production red in
-         if not (IndexSet.is_empty lookaheads) then
-           simulate_reduction
-             lookaheads (Production.lhs prod) (Production.length prod) 0 [] lrc
-       ) (Reduction.from_lr1 (LrC.lr1_of_lrc lrc))
+    let rec simulate_reduction lookaheads lhs position cost path state =
+      if position > 0 then
+        IndexSet.iter (fun tr ->
+            simulate_reduction lookaheads lhs
+              (position - 1)
+              (cost + TrC.cost tr)
+              (tr :: path)
+              (TrC.source tr)
+          ) (TrC.predecessors state)
+      else
+        IndexSet.iter begin fun tr ->
+          match TrC.split tr with
+          | R _ -> ()
+          | L gt ->
+            if Index.equal (TrC.goto_symbol gt) lhs then (
+              let lookaheads =
+                Terminal.intersect lookaheads (LrC.lookaheads (TrC.target tr))
+              in
+              if not (IndexSet.is_empty lookaheads) then
+                push acc {path; cost; target=gt; lookaheads};
+            )
+        end (TrC.successors state)
 
-   include Vector.Of_array(struct type a = desc let array = Array.of_list !acc end)
+    let () = Index.iter LrC.n @@ fun lrc ->
+      let lookaheads = LrC.lookaheads lrc in
+      IndexSet.iter (fun red ->
+          let lookaheads =
+            Terminal.intersect (Reduction.lookaheads red) lookaheads
+          in
+          let prod = Reduction.production red in
+          if not (IndexSet.is_empty lookaheads) then
+            simulate_reduction
+              lookaheads (Production.lhs prod) (Production.length prod) 0 [] lrc
+        ) (Reduction.from_lr1 (LrC.lr1_of_lrc lrc))
 
-   type t = n index
-   type set = n indexset
-   type 'a map = (n, 'a) indexmap
-   let n = Vector.length vector
+    include Vector.Of_array(struct type a = desc let array = Array.of_list !acc end)
 
-   let path i = vector.:(i).path
-   let cost i = vector.:(i).cost
-   let target i = vector.:(i).target
-   let lookaheads i = vector.:(i).lookaheads
+    type t = n index
+    type set = n indexset
+    type 'a map = (n, 'a) indexmap
+    let n = Vector.length vector
 
-   let from_target =
-     let table = Vector.make TrC.goto IndexSet.empty in
-     let register i t = table.@(t.target) <- IndexSet.add i in
-     Vector.rev_iteri register vector;
-     Vector.get table
+    let path i = vector.:(i).path
+    let cost i = vector.:(i).cost
+    let target i = vector.:(i).target
+    let lookaheads i = vector.:(i).lookaheads
+
+    let from_target =
+      let table = Vector.make TrC.goto IndexSet.empty in
+      let register i t = table.@(t.target) <- IndexSet.add i in
+      Vector.rev_iteri register vector;
+      Vector.get table
+    let () = Stopwatch.step time "Done with RedC, %d reduction scenario\n\
+                                  (%.02f ways to take a transition on average)"
+        (cardinal n) (float (cardinal n) /. float (cardinal TrC.goto))
   end
 
   (* End timing after computing all necessary information *)

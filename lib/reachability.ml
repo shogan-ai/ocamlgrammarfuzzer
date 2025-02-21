@@ -375,7 +375,13 @@ struct
        Classes will be identified and accessed by their index,
        random access is important.
     *)
-    let classes = Vector.map Array.of_list classes
+    let classes =
+      let prepare l =
+        let a = Array.of_list l in
+        Array.sort IndexSet.compare_minimum a;
+        a
+      in
+      Vector.map prepare classes
 
     let for_edge nte =
       classes.:(Node.inj_r nte)
