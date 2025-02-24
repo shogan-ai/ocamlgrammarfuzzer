@@ -85,14 +85,9 @@ module type S = sig
     (* Project a transition into a goto or a shift transition *)
     val split : any index -> (goto index, shift index) either
 
-    (* A shift transition is a shift transition of the LR(1) automaton,
-       but a goto transition is a refinement of an LR(1) goto transition. *)
+    (* A goto transition is a refinement of an LR(1) goto transition.
+       (while shift transitions are the same as LR(1) shift transitions) *)
     val core : goto index -> Transition.goto index
-
-    (* [find_goto s nt] finds the goto transition originating from [s] and
-       labelled by [nt], or raise [Not_found].  *)
-    (*val find_goto : LrC.t -> Nonterminal.t -> goto indexset
-      val find_goto_target : LrC.t -> Nonterminal.t -> LrC.set*)
 
     (* Get the source state of a transition *)
     val source : any index -> LrC.t
@@ -116,12 +111,18 @@ module type S = sig
     (* [predecessors s] returns all the transitions [tr] such that
        [target tr = s] *)
     val predecessors : LrC.t -> any indexset
+
+    (* Minimal number of symbols needed to take a transition *)
+    val cost : any index -> int
+
+    val accepting : goto indexset
   end
 
   module RedC : sig
     include INDEXED
     val path : t -> TrC.any index list
     val cost : t -> int
+    val production : t -> Production.t
     val target : t -> TrC.goto index
     val lookaheads : t -> Terminal.set
     val from_target : TrC.goto index -> set
@@ -293,6 +294,7 @@ struct
                  IndexSet.compare_minimum edge_classes.(!edge) post_class >= 0
            do
              if IndexSet.quick_subset edge_classes.(!edge) post_class then (
+               assert (IndexSet.subset edge_classes.(!edge) post_class);
                let cost =
                  costs.(Reachability.Cells.table_index
                           ~post_classes:count ~pre ~post:!edge)
@@ -300,7 +302,8 @@ struct
                mcost := Int.min cost !mcost;
                if cost < max_int then
                  edges := IntSet.add !edge !edges;
-             );
+             ) else
+               assert (IndexSet.disjoint edge_classes.(!edge) post_class);
              decr edge
            done;
            if !mcost < max_int then (
@@ -390,8 +393,13 @@ struct
 
     let successors = Vector.get successors
     let predecessors = Vector.get predecessors
-    let () = Stopwatch.step time "Done with TrC, %d goto transitions (from %d in Lr1)"
-        (cardinal goto) (cardinal Transition.goto)
+
+    let accepting =
+      IndexSet.init_from_set goto
+        (fun gt -> IndexSet.mem (core gt) Transition.accepting)
+
+    let () = Stopwatch.step time "Done with TrC, %d goto transitions (from %d in Lr1), %d initial"
+        (cardinal goto) (cardinal Transition.goto) (IndexSet.cardinal accepting)
   end
 
   module RedC = struct
@@ -401,17 +409,30 @@ struct
       path : TrC.any index list;
       cost : int;
       target : TrC.goto index;
+      prod : Production.t;
       lookaheads : Terminal.set;
     }
 
     let _pts ts = string_of_indexset ~index:Terminal.to_string ts
 
+    let () =
+      Index.iter LrC.n (fun lrc ->
+          let lr1 = LrC.lr1_of_lrc lrc in
+          assert (IndexSet.mem lrc (LrC.lrcs_of_lr1 lr1));
+          IndexSet.iter (fun tr ->
+              assert (TrC.target tr = lrc)
+            ) (TrC.predecessors lrc);
+          IndexSet.iter (fun tr ->
+              assert (TrC.source tr = lrc)
+            ) (TrC.successors lrc);
+        )
+
     let acc = ref []
 
-    let rec simulate_reduction lookaheads lhs position cost path state =
+    let rec simulate_reduction lookaheads prod position cost path state =
       if position > 0 then
         IndexSet.iter (fun tr ->
-            simulate_reduction lookaheads lhs
+            simulate_reduction lookaheads prod
               (position - 1)
               (cost + TrC.cost tr)
               (tr :: path)
@@ -422,12 +443,12 @@ struct
           match TrC.split tr with
           | R _ -> ()
           | L gt ->
-            if Index.equal (TrC.goto_symbol gt) lhs then (
+            if Index.equal (TrC.goto_symbol gt) (Production.lhs prod) then (
               let lookaheads =
                 Terminal.intersect lookaheads (LrC.lookaheads (TrC.target tr))
               in
               if not (IndexSet.is_empty lookaheads) then
-                push acc {path; cost; target=gt; lookaheads};
+                push acc {path; cost; target=gt; prod; lookaheads};
             )
         end (TrC.successors state)
 
@@ -440,7 +461,7 @@ struct
           let prod = Reduction.production red in
           if not (IndexSet.is_empty lookaheads) then
             simulate_reduction
-              lookaheads (Production.lhs prod) (Production.length prod) 0 [] lrc
+              lookaheads prod (Production.length prod) 0 [] lrc
         ) (Reduction.from_lr1 (LrC.lr1_of_lrc lrc))
 
     include Vector.Of_array(struct type a = desc let array = Array.of_list !acc end)
@@ -452,6 +473,7 @@ struct
 
     let path i = vector.:(i).path
     let cost i = vector.:(i).cost
+    let production i = vector.:(i).prod
     let target i = vector.:(i).target
     let lookaheads i = vector.:(i).lookaheads
 
