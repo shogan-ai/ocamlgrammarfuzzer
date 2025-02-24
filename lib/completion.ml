@@ -3,7 +3,7 @@
 
 (* Construct the LRC Completion automaton *)
 
-module Make(Info : Info.S)(Lrc: Lrc.S with module Info := Info) =
+(*module Make(Info : Info.S)(Lrc: Lrc.S with module Info := Info) =
 struct
   (*open Info*)
 
@@ -120,3 +120,4 @@ struct
     let monomials = Vector.map*)
   *)
 end
+  *)

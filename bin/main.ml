@@ -6,11 +6,135 @@ open Misc
 module Grammar = MenhirSdk.Cmly_read.FromString(Ocaml_grammar)
 module Info = Grammarfuzzer.Info.Make(Grammar)
 module Reachability = Grammarfuzzer.Reachability.Make(Info)()
-module Lrc_raw = Grammarfuzzer.Lrc.Make(Info)(Reachability)()
+
+open Info
 
 let () = Random.self_init ()
 
-let sample set =
+let sample_list l =
+  List.nth l (Random.int (List.length l))
+
+let rec fuzz size0 cell acc =
+  let current_cost = Reachability.Cells.cost cell in
+  let size = Int.max size0 current_cost in
+  let node, i_pre, i_post = Reachability.Cells.decode cell in
+  match Reachability.Tree.split node with
+  | R (l, r) ->
+    let coercion =
+      Reachability.Coercion.infix (Reachability.Tree.post_classes l)
+        (Reachability.Tree.pre_classes r)
+    in
+    let l_index = Reachability.Cells.encode l in
+    let r_index = Reachability.Cells.encode r in
+    let candidates = ref [] in
+    Array.iteri begin fun i_post_l all_pre_r ->
+      let cl = l_index i_pre i_post_l in
+      let l_cost = Reachability.Cells.cost cl in
+      if l_cost < max_int then
+        Array.iter begin fun i_pre_r ->
+          let cr = r_index i_pre_r i_post in
+          let r_cost = Reachability.Cells.cost cr in
+          if r_cost < max_int && l_cost + r_cost <= size then begin
+            push candidates (cl, cr)
+          end
+        end all_pre_r
+    end coercion.Reachability.Coercion.forward;
+    let (cl, cr) = sample_list !candidates in
+    let sl = Reachability.Cells.cost cl in
+    let sr = Reachability.Cells.cost cr in
+    let size = size - sl - sr in
+    let mid =
+      try (Random.int (size + 1) + Random.int (size + 1)) / 2
+      with exn ->
+        Printf.eprintf "Invalid random range: %d, with size0:%d cost:%d size:%d sl:%d sr:%d\n"
+          (size + 1) size0 current_cost size sl sr;
+        raise exn
+    in
+    fuzz (sl + mid) cl @@ fuzz (sr + (size - mid)) cr @@ acc
+  | L tr ->
+    match Transition.split tr with
+    | R shift ->
+      (* It is a shift transition, just shift the symbol *)
+      Transition.shift_symbol shift :: acc
+    | L goto ->
+      (* It is a goto transition *)
+      let nullable, non_nullable = Reachability.Tree.goto_equations goto in
+      let c_pre = (Reachability.Tree.pre_classes node).(i_pre) in
+      let c_post = (Reachability.Tree.post_classes node).(i_post) in
+      let nullable =
+        (* Is a nullable reduction is possible, don't do anything *)
+        not (IndexSet.is_empty nullable) &&
+        IndexSet.quick_subset c_post nullable &&
+        not (IndexSet.disjoint c_pre c_post)
+      in
+      if size = 0 && nullable then (
+        acc
+      ) else
+        let candidates =
+          List.filter_map begin fun (node', lookahead) ->
+            if IndexSet.disjoint c_post lookahead then
+              (* The post lookahead class does not permit reducing this
+                 production *)
+              None
+            else
+              let costs = Reachability.Cells.table.:(node') in
+              match Reachability.Tree.pre_classes node' with
+              | [|c_pre'|] when IndexSet.disjoint c_pre' c_pre ->
+                (* The pre lookahead class does not allow to enter this
+                   branch. *)
+                None
+              | pre' ->
+                (* Visit all lookahead classes, pre and post, and find
+                   the mapping between the parent node and this
+                   sub-node *)
+                let pred_pre _ c_pre' =
+                  IndexSet.quick_subset c_pre' c_pre
+                and pred_post _ c_post' =
+                  IndexSet.quick_subset c_post c_post'
+                in
+                match
+                  Misc.array_findi pred_pre 0 pre',
+                  Misc.array_findi pred_post 0 (Reachability.Tree.post_classes node')
+                with
+                | exception Not_found -> None
+                | i_pre', i_post' ->
+                  let offset = Reachability.Cells.offset node' i_pre' i_post' in
+                  if costs.(offset) <= size then
+                    (* We found a candidate of minimal cost *)
+                    Some (Reachability.Cells.encode_offset node' offset)
+                  else
+                    None
+          end non_nullable
+        in
+        let length = List.length candidates in
+        if nullable then
+          let index = Random.int (1 + length * (size + 1)) in
+          if index = 0 then
+            acc
+          else
+            fuzz size (List.nth candidates ((index - 1) / (size + 1))) acc
+        else
+          fuzz size (sample_list candidates) acc
+
+
+let () =
+  IndexSet.iter (fun gt ->
+      let tr = Transition.of_goto gt in
+      assert (Array.length (Reachability.Classes.pre_transition tr) = 1);
+      assert (Array.length (Reachability.Classes.post_transition tr) = 1);
+      let node = Reachability.Tree.leaf tr in
+      let cell = Reachability.Cells.encode node 0 0 in
+      let tokens = fuzz 100 cell [] in
+      Printf.printf "%d tokens:" (List.length tokens);
+      List.iter (fun t ->
+          print_char ' ';
+          print_string (Info.Terminal.to_string t)
+        ) tokens;
+      print_newline ();
+      raise Exit
+    ) Transition.accepting
+
+(*let sample set =
   let index = ref (Random.int (IndexSet.cardinal set)) in
   IndexSet.find_map (fun elt ->
       if !index = 0
@@ -18,8 +142,6 @@ let sample set =
       else (decr index; None)
     ) set
   |> Option.get
-
-open Lrc_raw
 
 let reductions_for_size size gt =
   let reductions = RedC.from_target gt in
@@ -110,4 +232,4 @@ let () =
           (string_of_indexset ~index:Info.Terminal.to_string (LrC.lookaheads (TrC.target (TrC.of_goto gt))));
       ) else incr ok
     );
-  Printf.eprintf "%d transitions were correct\n" !ok
+  Printf.eprintf "%d transitions were correct\n" !ok*)
