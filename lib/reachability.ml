@@ -301,7 +301,7 @@ struct
 
     (* Associate a class to each node *)
 
-    let classes = Vector.make Node.n []
+    let classes = Vector.make Node.n IndexSet.Set.empty
 
     (* Evaluate classes for a node, directly computing equation 4-6.
        (compute follow for a goto node, first for an lr1 node)
@@ -312,7 +312,7 @@ struct
       let acc = ref acc in
       begin match Node.prj node with
         | L lr1 ->
-          Gr.visit_lr1 (fun n -> acc := classes.:(n) @ !acc) lr1
+          Gr.visit_lr1 (fun n -> acc := IndexSet.Set.union classes.:(n) !acc) lr1
         | R edge ->
           List.iter (fun {Unreduce. lookahead; state; _} ->
               let base = classes.:(Node.inj_l state) in
@@ -320,19 +320,25 @@ struct
                  (remove the ↑Z in equation (6) *)
               let base =
                 if lookahead != Terminal.all
-                then List.map (IndexSet.inter lookahead) base
+                then IndexSet.Set.map (IndexSet.inter lookahead) base
                 else base
               in
               (* Stop commenting here *)
-              acc := (lookahead :: base) @ !acc
+              acc := IndexSet.Set.union (IndexSet.Set.add lookahead base) !acc
             ) (Unreduce.goto_transition edge)
       end;
       !acc
 
+    let partition_sets sets =
+      sets
+      |> IndexSet.Set.elements
+      |> IndexRefine.partition
+      |> IndexSet.Set.of_list
+
     let visit_scc _ nodes =
       (* Compute approximation for an SCC, as described in section 6.2 *)
       let coarse_classes =
-        IndexRefine.partition (List.fold_left classes_of [] nodes)
+        partition_sets (List.fold_left classes_of IndexSet.Set.empty nodes)
       in
       match nodes with
       | [node] -> classes.:(node) <- coarse_classes
@@ -347,17 +353,15 @@ struct
                  coarse := IndexSet.union lookahead !coarse)
               (Unreduce.goto_transition e);
             classes.:(node) <-
-              coarse_classes
-              |> List.map (IndexSet.inter !coarse)
-              |> IndexRefine.partition
+              partition_sets (IndexSet.Set.map (IndexSet.inter !coarse) coarse_classes)
         end nodes;
         List.iter begin fun node ->
           match Node.prj node with
           | R _ -> ()
           | L lr1 ->
-            let acc = ref [] in
-            Gr.visit_lr1 (fun n -> acc := classes.:(n) @ !acc) lr1;
-            classes.:(node) <- IndexRefine.partition !acc
+            let acc = ref IndexSet.Set.empty in
+            Gr.visit_lr1 (fun n -> acc := IndexSet.Set.union classes.:(n) !acc) lr1;
+            classes.:(node) <- partition_sets !acc
         end nodes
 
     let () = Scc.rev_topological_iter visit_scc
@@ -368,7 +372,7 @@ struct
         match Lr1.incoming lr1 with
         | Some sym when Symbol.is_nonterminal sym -> ()
         | None | Some _ ->
-          classes.:(Node.inj_l lr1) <- [Terminal.all]
+          classes.:(Node.inj_l lr1) <- IndexSet.Set.singleton Terminal.all
       )
 
     (* We now have the final approximation.
@@ -377,7 +381,7 @@ struct
     *)
     let classes =
       let prepare l =
-        let a = Array.of_list l in
+        let a = Array.of_seq (IndexSet.Set.to_seq l) in
         Array.sort IndexSet.compare_minimum a;
         a
       in
