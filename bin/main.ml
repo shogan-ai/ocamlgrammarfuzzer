@@ -81,6 +81,7 @@ let string_of_prod prod =
   | rhs -> string_concat_map " " Symbol.name (Array.to_list rhs)
 
 let () =
+  let ok = ref 0 in
   Index.iter TrC.goto (fun gt ->
       let reds = RedC.from_target gt in
       let cost = TrC.cost (TrC.of_goto gt) in
@@ -90,15 +91,23 @@ let () =
           reds Int.max_int
       in
       if cost <> cost' then (
-        Printf.eprintf "transition %d:%s->%s should have %d but reductions permit reaching %d:\n"
-          (gt :> int)
-          (LrC.to_string (TrC.source (TrC.of_goto gt)))
-          (LrC.to_string (TrC.target (TrC.of_goto gt)))
-          cost cost';
+        if cost' < max_int then
+          Printf.eprintf "Transition %s->%s is expected to have cost %d but the reductions reaching it have cost %d:\n"
+            (LrC.to_string (TrC.source (TrC.of_goto gt)))
+            (LrC.to_string (TrC.target (TrC.of_goto gt)))
+            cost cost'
+        else
+          Printf.eprintf "Transition %s->%s is expected to have cost %d but is unreachable\n"
+            (LrC.to_string (TrC.source (TrC.of_goto gt)))
+            (LrC.to_string (TrC.target (TrC.of_goto gt)))
+            cost;
         IndexSet.iter (fun red ->
             Printf.eprintf "- cost %d: %s\n"
               (RedC.cost red)
               (string_of_prod (RedC.production red))
           ) reds;
-      )
-    )
+        Printf.eprintf "looking ahead at %s\n"
+          (string_of_indexset ~index:Info.Terminal.to_string (LrC.lookaheads (TrC.target (TrC.of_goto gt))));
+      ) else incr ok
+    );
+  Printf.eprintf "%d transitions were correct\n" !ok

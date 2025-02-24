@@ -528,3 +528,12 @@ let allocate qs =
   let qs' = allocate result !qs in
   qs := qs';
   !result
+
+let quick_subset s1 s2 =
+  let result = quick_subset s1 s2 in
+  assert (
+    if result
+    then subset s1 s2
+    else disjoint s1 s2
+  );
+  result
