@@ -464,7 +464,7 @@ let init_subset i j f =
 
 let rec filter f = function
   | N -> N
-  | C (addr, word0, ss) ->
+  | C (addr, word0, ss) as ss0 ->
     let word = ref 0 in
     for i = 0 to word_size - 1 do
       if word0 land (1 lsl i) <> 0 && f (addr + i) then
@@ -473,7 +473,11 @@ let rec filter f = function
     if !word = 0 then
       filter f ss
     else
-      C (addr, !word, filter f ss)
+      let ss' = filter f ss in
+      if !word = word0 && ss == ss' then
+        ss0
+      else
+        C (addr, !word, ss')
 
 let rec find f = function
   | N -> raise Not_found
