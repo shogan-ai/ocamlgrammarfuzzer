@@ -305,31 +305,24 @@ struct
      let outers = Reachability.Classes.for_lr1 target in
      let post_classes = Array.length posts in
      let outer_classes = Array.length outers in
-     Array.iter (fun outer ->
-         assert (Array.exists (fun s -> IndexSet.subset s outer) posts)
-       ) outers;
      let coercion = Reachability.Coercion.infix posts outers in
      let costs = Reachability.Cells.table.:(Reachability.Tree.leaf tr) in
      Array.init pre_classes begin fun pre ->
-       let outers = ref [] in
+       let acc = ref [] in
        for outer = outer_classes - 1 downto 0 do
          let post = coercion.backward.(outer) in
          let cost =
-           if post = -1
-           then max_int
+           if post <> -1 then
+             costs.(Reachability.Cells.table_index ~post_classes ~pre ~post)
            else
-           try costs.(Reachability.Cells.table_index ~post_classes ~pre ~post)
-           with Invalid_argument _ as exn ->
-             Printf.eprintf "pre:%d post:%d post_classes:%d\n"
-               pre post post_classes;
-             raise exn
+             max_int
          in
          if cost < max_int then (
            incr goto_count;
-           push outers (outer, cost)
+           push acc (outer, cost)
          )
        done;
-       !outers
+       !acc
      end
 
    module Goto = Const(struct let cardinal = !goto_count end)
