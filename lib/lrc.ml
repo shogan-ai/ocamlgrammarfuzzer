@@ -307,20 +307,19 @@ struct
      let outer_classes = Array.length outers in
      let coercion = Reachability.Coercion.infix posts outers in
      let costs = Reachability.Cells.table.:(Reachability.Tree.leaf tr) in
+     assert (Array.length costs = pre_classes * post_classes);
      Array.init pre_classes begin fun pre ->
        let acc = ref [] in
        for outer = outer_classes - 1 downto 0 do
          let post = coercion.backward.(outer) in
-         let cost =
-           if post <> -1 then
+         if post <> -1 then
+           let cost =
              costs.(Reachability.Cells.table_index ~post_classes ~pre ~post)
-           else
-             max_int
-         in
-         if cost < max_int then (
-           incr goto_count;
-           push acc (outer, cost)
-         )
+           in
+           if cost < max_int then (
+             incr goto_count;
+             push acc (outer, cost)
+           )
        done;
        !acc
      end
