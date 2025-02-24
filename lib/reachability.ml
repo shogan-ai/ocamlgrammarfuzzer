@@ -110,7 +110,7 @@ module type S = sig
     type pre = Pre_identity | Pre_singleton of int
 
     (* Compute the pre coercion from a partition of the form P = first(cost(s, A))
-       to a partition of the form Q = first(ccost(𝑠, 𝐴 → 𝜖•𝛼)))
+       to a partition of the form Q = first(ccost(s, A → ϵ•α)))
     *)
     val pre : 'a indexset array -> 'a indexset array -> pre option
 
@@ -142,7 +142,7 @@ struct
      It lists the different reductions that lead to following a goto
      transition, reversing the effect of a single reduction.
 
-     It serves the same purpose as the [reduce(𝑠, 𝐴 → 𝛼)] function from the
+     It serves the same purpose as the [reduce(s, A → α)] function from the
      paper but is more convenient for the rest of the implementation.
   *)
   module Unreduce : sig
@@ -427,7 +427,7 @@ struct
      products.
 
      Each occurrence of [ccost(s,x)] is mapped to a leaf.
-     Occurrences of [(ccost(𝑠, 𝐴 → 𝛼•𝑥𝛽)] are mapped to inner nodes, except
+     Occurrences of [(ccost(s, A → α•xβ)] are mapped to inner nodes, except
      that the chain of multiplication are re-associated.
   *)
   module ConsedTree () : sig
@@ -512,18 +512,18 @@ struct
 
     let goto_equations =
       (* Explicit representation of the rhs of equation (7).
-         This equation defines ccost(𝑠, 𝐴) as the minimum of a set of
+         This equation defines ccost(s, A) as the minimum of a set of
          sub-matrices.
 
-         Matrices of the form [creduce(𝑠, 𝐴 → 𝛼)] are represented by a
+         Matrices of the form [creduce(s, A → α)] are represented by a
          [TerminalSet.t], following section 6.5.
 
          [goto_equations] are represented as pair [(nullable, non_nullable)]
-         such that, for each sub-equation [ccost(𝑠, 𝐴→𝜖•𝛼) · creduce(𝑠, 𝐴→𝛼)]:
-         - if [𝛼 = 𝜖] (an empty production can reduce A),
-           [nullable] contains the terminals [creduce(𝑠, 𝐴 → 𝛼)]
+         such that, for each sub-equation [ccost(s, A→ϵ•α) · creduce(s, A→α)]:
+         - if [α = ϵ] (an empty production can reduce A),
+           [nullable] contains the terminals [creduce(s, A → α)]
          - otherwise,
-           [non_nullable] contains the pair [ccost(𝑠, 𝐴→𝜖•𝛼)], [creduce(𝑠, 𝐴→𝛼)}
+           [non_nullable] contains the pair [ccost(s, A→ϵ•α)], [creduce(s, A→α)}
       *)
       tabulate_finset Transition.goto @@ fun tr ->
       (* Number of rows in the compact cost matrix for tr *)
@@ -758,14 +758,14 @@ struct
   module Coercion = struct
 
     (* Pre coercions are used to handle the minimum in equation (7):
-       ccost(𝑠, 𝐴 → 𝜖•𝛼) · creduce(𝑠, 𝐴 → 𝛼)
+       ccost(s, A → ϵ•α) · creduce(s, A → α)
 
-       If 𝛼 begins with a terminal, it will have only one class.
+       If α begins with a terminal, it will have only one class.
        This is handled by the [Pre_singleton x] constructor that indicates that
        this only class should be coerced to class [x].
 
-       If 𝛼 begins with a non-terminal, [Pre_identity] is used: ccost(𝑠, 𝐴) and
-       ccost(𝑠, 𝐴 → 𝜖•𝛼) are guaranteed to have the same "first" classes.
+       If α begins with a non-terminal, [Pre_identity] is used: ccost(s, A) and
+       ccost(s, A → ϵ•α) are guaranteed to have the same "first" classes.
     *)
     type pre =
       | Pre_identity
@@ -774,9 +774,9 @@ struct
     (* Compute the pre coercion from a partition of the form
          P = first(cost(s, A))
        to a partition of the form
-         Q = first(ccost(𝑠, 𝐴 → 𝜖•𝛼)))
+         Q = first(ccost(s, A → ϵ•α)))
 
-       If 𝛼 starts with a terminal, we look only for the
+       If α starts with a terminal, we look only for the
     *)
     let pre outer inner =
       if outer == inner then
@@ -796,7 +796,7 @@ struct
       )
 
     (* The type infix is the general representation for the coercion matrices
-       coerce(𝑃, 𝑄) appearing in 𝑀1 · coerce(𝑃, 𝑄) · 𝑀2
+       coerce(P, Q) appearing in M1 · coerce(P, Q) · M2
 
        Since Q is finer than P, a class of P maps to multiple classes of Q.
        This is represented by the forward array: a class p in P maps to all
