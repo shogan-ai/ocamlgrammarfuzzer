@@ -44,11 +44,12 @@ let rec fuzz size0 cell acc =
     let sr = Reachability.Cells.cost cr in
     let size = size - sl - sr in
     let mid =
-      try (Random.int (size + 1) + Random.int (size + 1)) / 2
-      with exn ->
-        Printf.eprintf "Invalid random range: %d, with size0:%d cost:%d size:%d sl:%d sr:%d\n"
-          (size + 1) size0 current_cost size sl sr;
-        raise exn
+      if Reachability.Finite.get cl then
+        0
+      else if Reachability.Finite.get cr then
+        size
+      else
+        (Random.int (size + 1) + Random.int (size + 1)) / 2
     in
     fuzz (sl + mid) cl @@ fuzz (sr + (size - mid)) cr @@ acc
   | L tr ->
@@ -67,9 +68,9 @@ let rec fuzz size0 cell acc =
         IndexSet.quick_subset c_post nullable &&
         not (IndexSet.disjoint c_pre c_post)
       in
-      if size = 0 && nullable then (
+      if size = 0 && nullable then
         acc
-      ) else
+      else
         let candidates =
           List.filter_map begin fun (node', lookahead) ->
             if IndexSet.disjoint c_post lookahead then
@@ -99,11 +100,9 @@ let rec fuzz size0 cell acc =
                 | exception Not_found -> None
                 | i_pre', i_post' ->
                   let offset = Reachability.Cells.offset node' i_pre' i_post' in
-                  if costs.(offset) <= size then
-                    (* We found a candidate of minimal cost *)
-                    Some (Reachability.Cells.encode_offset node' offset)
-                  else
-                    None
+                  if costs.(offset) <= size
+                  then Some (Reachability.Cells.encode_offset node' offset)
+                  else None
           end non_nullable
         in
         let length = List.length candidates in
