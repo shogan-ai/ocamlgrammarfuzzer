@@ -121,6 +121,10 @@ module type S = sig
     (* Compute the infix coercion from two partitions P Q such that Q <= P *)
     val infix : ?lookahead:'a indexset -> 'a indexset array -> 'a indexset array -> infix
   end
+
+  module Finite : sig
+    val get : Cells.t -> bool
+  end
 end
 
 module Make (Info : Info.S)() : S with module Info := Info =
@@ -1039,7 +1043,7 @@ struct
         Cells.table.:(node).(offset) <- v
     end
 
-    module MarkMap = struct
+    module MarkMap() = struct
       (* Associate a boolean value to each cell.
          For efficiency, we use a "bytes" for each node, each cell
          corresponding to a single byte.
@@ -1050,22 +1054,158 @@ struct
          does not translate to any observable performance improvement.
       *)
       let data = Vector.map
-          (fun costs -> Bytes.make (Array.length costs) '\x00')
+          (fun costs -> Bytes.make ((Array.length costs + 7) / 8) '\x00')
           Cells.table
+
+      let decompose cell =
+        (cell lsr 3, 1 lsl (cell land 7))
 
       let get var =
         let node, cell = Cells.decode_offset var in
-        Bytes.get data.:(node) cell <> '\x00'
+        let offset, mask = decompose cell in
+        Char.code (Bytes.get data.:(node) offset) land mask <> 0
 
       let set var value =
         let node, cell = Cells.decode_offset var in
-        Bytes.set data.:(node) cell
-          (if value then '\x01' else '\x00')
+        let offset, mask = decompose cell in
+        let bits = Char.code (Bytes.get data.:(node) offset) in
+        let bits' =
+          if value then
+            bits lor mask
+          else
+            bits land lnot mask
+        in
+        Bytes.set data.:(node) offset (Char.unsafe_chr bits')
     end
 
-    (* Run the solver *)
-    include Fix.DataFlow.ForCustomMaps(Property)(Graph)(CostMap)(MarkMap)
+    (* Run the solver for shortest paths *)
+    include Fix.DataFlow.ForCustomMaps(Property)(Graph)(CostMap)(MarkMap())
+
+    (* Run the solver for finite languages *)
+    module Bool_or = struct
+      type property = bool
+      let leq_join = (||)
+    end
+
+    module Finite = MarkMap()
+
+    module FiniteGraph = struct
+      type variable = Cells.t
+
+      let count = Vector.init Transition.goto (fun gt ->
+          let tr = Transition.of_goto gt in
+          Array.make (
+            Array.length (Classes.pre_transition tr) *
+            Array.length (Classes.post_transition tr)
+          ) 0
+        )
+
+      let () =
+        Vector.iter (fun deps ->
+            List.iter (function
+                | Inner _ -> ()
+                | Leaf (parent, pre, post) ->
+                  let node = Tree.leaf (Transition.of_goto parent) in
+                  let post_classes = Array.length (Tree.post_classes node) in
+                  let table = Cells.table.:(node) in
+                  let count = count.:(parent) in
+                  let update_pre pre =
+                    Array.iter (Array.iter (fun post ->
+                        let index = Cells.table_index ~post_classes ~pre ~post in
+                        if table.(index) < max_int then
+                          count.(index) <- count.(index) + 1
+                      )) post
+                  in
+                  match pre with
+                  | Coercion.Pre_singleton i -> update_pre i
+                  | Coercion.Pre_identity ->
+                    let pre_classes = Tree.pre_classes node in
+                    for i = 0 to Array.length pre_classes - 1 do
+                      update_pre i
+                    done
+              ) deps
+          ) dependents
+
+      let foreach_root visit_root =
+        Index.iter Transition.shift (fun sh ->
+            let node = Tree.leaf (Transition.of_shift sh) in
+            visit_root (Cells.encode_offset node 0) true
+          );
+        Index.iter Transition.goto (fun gt ->
+            let node = Tree.leaf (Transition.of_goto gt) in
+            let count = count.:(gt) in
+            Array.iteri (fun i cost ->
+                if cost < max_int && count.(i) = 0 then
+                  visit_root (Cells.encode_offset node i) true
+              ) Cells.table.:(node)
+          )
+
+      (* Visit all the successors of a cell.
+         This amounts to:
+         - finding the node the cell belongs to
+         - looking at the reverse dependencies of this node
+         - visiting all cells that are affected in the dependencies
+      *)
+      let foreach_successor index finite f =
+        if finite then
+          let node, i_pre, i_post = Cells.decode index in
+          let update_dep = function
+            | Leaf (parent, pre, post) ->
+              let count = count.:(parent) in
+              let parent = Tree.leaf (Transition.of_goto parent) in
+              let i_pre' = match pre with
+                | Coercion.Pre_singleton i -> i
+                | Coercion.Pre_identity -> i_pre
+              in
+              let parent_index = Cells.encode parent in
+              Array.iter
+                (fun i_post' ->
+                   let index = parent_index i_pre' i_post' in
+                   let _, offset = Cells.decode_offset index in
+                   count.(offset) <- count.(offset) - 1;
+                   assert (count.(offset) >= 0);
+                   if count.(offset) = 0 then
+                     f index true)
+                post.(i_post)
+            | Inner (parent, inner) ->
+              (* This change updates the cost of an occurrence of equation 8,
+                 of the form l . coercion . r
+                 We have to find whether the change comes from the [l] or the [r]
+                 node to update the right-hand cells of the parent *)
+              let l, r = Tree.define parent in
+              let parent_index = Cells.encode (Tree.inject parent) in
+              if l = node then (
+                (* The left term has been updated *)
+                for i_post' = 0 to Array.length (Tree.post_classes r) - 1 do
+                  let r_index = Cells.encode r in
+                  let r_finite =
+                    Array.for_all
+                      (fun i_pre' -> Finite.get (r_index i_pre' i_post'))
+                      inner.Coercion.forward.(i_post)
+                  in
+                  if r_finite then
+                    f (parent_index i_pre i_post') true
+                done
+              ) else (
+                (*sanity*)assert (r = node);
+                (* The right term has been updated *)
+                match inner.Coercion.backward.(i_pre) with
+                | -1 -> ()
+                | l_post ->
+                  let l_index = Cells.encode l in
+                  for i_pre = 0 to Array.length (Tree.pre_classes l) - 1 do
+                    let l_finite = Finite.get (l_index i_pre l_post) in
+                    if l_finite then
+                      f (parent_index i_pre i_post) true
+                  done
+              )
+          in
+          List.iter update_dep dependents.:(node)
+    end
+    include Fix.DataFlow.ForCustomMaps(Bool_or)(FiniteGraph)(Finite)(MarkMap())
   end
+
+  module Finite = Solver.Finite
 
   let () = Stopwatch.leave time
 end

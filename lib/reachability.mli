@@ -108,6 +108,10 @@ module type S = sig
     (* Compute the infix coercion from two partitions P Q such that Q <= P *)
     val infix : ?lookahead:'a indexset -> 'a indexset array -> 'a indexset array -> infix
   end
+
+  module Finite : sig
+    val get : Cells.t -> bool
+  end
 end
 
 module Make (Info : Info.S)() : S with module Info := Info
