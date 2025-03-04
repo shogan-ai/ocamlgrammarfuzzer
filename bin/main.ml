@@ -256,9 +256,9 @@ let () =
       let cell = Reachability.Cells.encode node 0 0 in
       let tokens = fuzz 100 cell [] in
       Printf.printf "%d tokens:" (List.length tokens);
-      List.iter (fun t ->
-          print_char ' ';
-          print_string terminals.:(t)
+      List.iteri (fun i t ->
+          if i > 0 then print_char ' ';
+          Printf.printf "(* C%d *) %s" i terminals.:(t)
         ) tokens;
       print_newline ();
       raise Exit
