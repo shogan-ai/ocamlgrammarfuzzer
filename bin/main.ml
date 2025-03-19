@@ -14,7 +14,7 @@ let () = Random.self_init ()
 let sample_list l =
   List.nth l (Random.int (List.length l))
 
-let rec fuzz size0 cell acc =
+let rec fuzz size0 cell ~f =
   let current_cost = Reachability.Cells.cost cell in
   let size = Int.max size0 current_cost in
   let node, i_pre, i_post = Reachability.Cells.decode cell in
@@ -51,26 +51,25 @@ let rec fuzz size0 cell acc =
       else
         (Random.int (size + 1) + Random.int (size + 1)) / 2
     in
-    fuzz (sl + mid) cl @@ fuzz (sr + (size - mid)) cr @@ acc
+    fuzz (sl + mid) cl ~f;
+    fuzz (sr + (size - mid)) cr ~f
   | L tr ->
     match Transition.split tr with
     | R shift ->
       (* It is a shift transition, just shift the symbol *)
-      Transition.shift_symbol shift :: acc
+      f (Transition.shift_symbol shift)
     | L goto ->
       (* It is a goto transition *)
       let nullable, non_nullable = Reachability.Tree.goto_equations goto in
       let c_pre = (Reachability.Tree.pre_classes node).(i_pre) in
       let c_post = (Reachability.Tree.post_classes node).(i_post) in
       let nullable =
-        (* Is a nullable reduction is possible, don't do anything *)
+        (* Check if a nullable reduction is possible *)
         not (IndexSet.is_empty nullable) &&
         IndexSet.quick_subset c_post nullable &&
         not (IndexSet.disjoint c_pre c_post)
       in
-      if size = 0 && nullable then
-        acc
-      else
+      if size > 0 || not nullable then
         let candidates =
           List.filter_map begin fun (node', lookahead) ->
             if IndexSet.disjoint c_post lookahead then
@@ -105,15 +104,13 @@ let rec fuzz size0 cell acc =
                   else None
           end non_nullable
         in
-        let length = List.length candidates in
-        if nullable then
-          let index = Random.int (1 + length * (size + 1)) in
-          if index = 0 then
-            acc
-          else
-            fuzz size (List.nth candidates ((index - 1) / (size + 1))) acc
+        if not nullable then
+          fuzz size (sample_list candidates) ~f
         else
-          fuzz size (sample_list candidates) acc
+          let length = List.length candidates in
+          let index = Random.int (1 + length * (size + 1)) in
+          if index > 0 then
+            fuzz size (List.nth candidates ((index - 1) / (size + 1))) ~f
 
 let terminals = Vector.init Info.Terminal.n @@
   fun t -> match Info.Terminal.to_string t with
@@ -239,127 +236,71 @@ let terminals = Vector.init Info.Terminal.n @@
   | "WHEN"                   -> "when"
   | "WHILE"                  -> "while"
   | "WITH"                   -> "with"
-  | "COMMENT"                -> "(* comment *)"
-  | "DOCSTRING"              -> "(** documentation *)"
+  | "COMMENT"                -> "(*comment*)"
+  | "DOCSTRING"              -> "(**documentation*)"
   | "EOL"                    -> "\n"
   | "METAOCAML_ESCAPE"       -> ".~"
   | "METAOCAML_BRACKET_OPEN" -> ".<"
   | "METAOCAML_BRACKET_CLOSE" -> ">."
   | x -> x
 
-let () =
-  IndexSet.iter (fun gt ->
-      let tr = Transition.of_goto gt in
-      assert (Array.length (Reachability.Classes.pre_transition tr) = 1);
-      assert (Array.length (Reachability.Classes.post_transition tr) = 1);
-      let node = Reachability.Tree.leaf tr in
-      let cell = Reachability.Cells.encode node 0 0 in
-      let tokens = fuzz 100 cell [] in
-      Printf.printf "%d tokens:" (List.length tokens);
-      List.iteri (fun i t ->
-          if i > 0 then print_char ' ';
-          Printf.printf "(* C%d *) %s" i terminals.:(t)
-        ) tokens;
-      print_newline ();
-      raise Exit
-    ) Transition.accepting
-
-(*let sample set =
-  let index = ref (Random.int (IndexSet.cardinal set)) in
-  IndexSet.find_map (fun elt ->
-      if !index = 0
-      then Some elt
-      else (decr index; None)
-    ) set
-  |> Option.get
-
-let reductions_for_size size gt =
-  let reductions = RedC.from_target gt in
-  let cost = TrC.cost (TrC.of_goto gt) in
-  let size = Int.max size cost in
-  IndexSet.filter (fun red -> RedC.cost red <= size) reductions
-
-let rec fuzz size gt acc =
-  let reduction = sample (reductions_for_size size gt) in
-  let path = RedC.path reduction in
-  let size, flexible =
-    if size > 0 then
-      List.fold_left
-        (fun (size, flexible) tr -> (size - TrC.cost tr, flexible + 1))
-        (size, 0) path
-    else
-      (size, 0)
+let generate_sentence ?(length=100) ?from f =
+  let tr = match from with
+    | None -> IndexSet.choose Transition.accepting
+    | Some tr -> tr
   in
-  Printf.eprintf "size: %d\n" size;
-  if size <= 0 then
-    List.fold_right (fun tr acc ->
-        match TrC.split tr with
-        | R sh -> TrC.shift_symbol sh :: acc
-        | L gt -> fuzz 0 gt acc
-      ) path acc
-  else
-    let splits =
-      List.sort Int.compare
-        (List.init flexible (fun _ -> Random.int (size + 1)))
-    in
-    let acc, _ =
-      List.fold_right (fun tr (acc, splits) ->
-          match TrC.split tr with
-          | R sh -> (TrC.shift_symbol sh :: acc, splits)
-          | L gt ->
-            let size, splits =
-              match splits with
-              | [] -> assert false
-              | [x] -> (size - x, [])
-              | x :: (y :: _ as splits) -> (y - x, splits)
-            in
-            (fuzz (TrC.cost tr + size) gt acc, splits)
-        ) path (acc, splits)
-    in
-    acc
+  let tr = Transition.of_goto tr in
+  assert (Array.length (Reachability.Classes.pre_transition tr) = 1);
+  assert (Array.length (Reachability.Classes.post_transition tr) = 1);
+  let node = Reachability.Tree.leaf tr in
+  let cell = Reachability.Cells.encode node 0 0 in
+  fuzz length cell ~f
+
+let output_with_comments oc =
+  let count = ref 0 in
+  fun t ->
+    if !count > 0 then output_char oc ' ';
+    Printf.fprintf oc "(* C%d *) %s" !count terminals.:(t);
+    incr count
+
+let directly_output oc =
+  let need_sep = ref false in
+  fun t ->
+    if !need_sep then output_char oc '\n';
+    need_sep := true;
+    output_string oc terminals.:(t)
+
+let opt_count = ref 1
+let opt_length = ref 100
+let opt_comments = ref false
+let opt_seed = ref (-1)
+
+let spec_list = [
+  ("-n"         , Arg.Set_int opt_count, "<int> Number of lines to generate"  );
+  ("--count"    , Arg.Set_int opt_count, "<int> Number of lines to generate"  );
+  ("-c"         , Arg.Set opt_comments , "Generate fake comments in the lines");
+  ("--comments" , Arg.Set opt_comments , "Generate fake comments in the lines");
+  ("-l"         , Arg.Set_int opt_length, "<int> Number of token per sentence");
+  ("--length"   , Arg.Set_int opt_length, "<int> Number of token per sentence");
+  ("--seed"     , Arg.Set_int opt_seed, "<int> Random seed");
+]
+
+let usage_msg = "Usage: ocamlgrammarfuzzer [options]"
 
 let () =
-  let tokens = fuzz 100 (IndexSet.choose TrC.accepting) [] in
-  List.iter (fun t ->
-      print_char ' ';
-      print_string (Info.Terminal.to_string t)
-    ) tokens
+  Arg.parse spec_list (fun unexpected ->
+      raise (Arg.Bad (Printf.sprintf "Unexpected argument %S" unexpected))
+    ) usage_msg
 
-let string_of_prod prod =
-  let open Info in
-  Nonterminal.to_string (Production.lhs prod) ^ ": " ^
-  match Production.rhs prod with
-  | [||] -> "ϵ"
-  | rhs -> string_concat_map " " Symbol.name (Array.to_list rhs)
+let () = match !opt_seed with
+  | -1 -> Random.self_init ()
+  |  n -> Random.init n
 
 let () =
-  let ok = ref 0 in
-  Index.iter TrC.goto (fun gt ->
-      let reds = RedC.from_target gt in
-      let cost = TrC.cost (TrC.of_goto gt) in
-      let cost' =
-        IndexSet.fold
-          (fun red cost' -> Int.min cost' (RedC.cost red))
-          reds Int.max_int
-      in
-      if cost <> cost' then (
-        if cost' < max_int then
-          Printf.eprintf "Transition %s->%s is expected to have cost %d but the reductions reaching it have cost %d:\n"
-            (LrC.to_string (TrC.source (TrC.of_goto gt)))
-            (LrC.to_string (TrC.target (TrC.of_goto gt)))
-            cost cost'
-        else
-          Printf.eprintf "Transition %s->%s is expected to have cost %d but is unreachable\n"
-            (LrC.to_string (TrC.source (TrC.of_goto gt)))
-            (LrC.to_string (TrC.target (TrC.of_goto gt)))
-            cost;
-        IndexSet.iter (fun red ->
-            Printf.eprintf "- cost %d: %s\n"
-              (RedC.cost red)
-              (string_of_prod (RedC.production red))
-          ) reds;
-        Printf.eprintf "looking ahead at %s\n"
-          (string_of_indexset ~index:Info.Terminal.to_string (LrC.lookaheads (TrC.target (TrC.of_goto gt))));
-      ) else incr ok
-    );
-  Printf.eprintf "%d transitions were correct\n" !ok*)
+  for _ = 0 to !opt_count - 1 do
+    generate_sentence ~length:!opt_length
+      (if !opt_comments
+       then output_with_comments stdout
+       else directly_output stdout);
+    output_char stdout ' '
+  done
