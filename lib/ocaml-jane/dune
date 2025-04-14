@@ -13,7 +13,7 @@
   (name ocaml_jane_parser)
   (modules parser_raw)
   (wrapped false)
-  (libraries compiler-libs.common menhirLib lrgrep.runtime))
+  (libraries compiler-libs.common menhirLib))
 
 (menhir
   (modules parser_raw)
