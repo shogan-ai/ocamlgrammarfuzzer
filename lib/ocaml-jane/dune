@@ -1,0 +1,20 @@
+(library
+  (name ocaml_jane_grammar)
+   (modules ocaml_jane_grammar))
+
+(rule
+  (targets ocaml_jane_grammar.ml)
+  (deps    parser_raw.cmly)
+  (action
+    (with-stdout-to %{targets}
+       (run %{exe:../ocaml/embed.exe} content=parser_raw.cmly))))
+
+(library
+  (name ocaml_jane_parser)
+  (modules parser_raw)
+  (wrapped false)
+  (libraries compiler-libs.common menhirLib lrgrep.runtime))
+
+(menhir
+  (modules parser_raw)
+  (flags :standard --inspection --table --cmly))

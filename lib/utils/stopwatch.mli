@@ -13,3 +13,5 @@ val enter : t -> ('a, unit, string, t) format4 -> 'a
 val leave : t -> unit
 
 val main : t
+
+val verbosity : int ref

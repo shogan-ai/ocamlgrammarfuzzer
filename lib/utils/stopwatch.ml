@@ -1,7 +1,12 @@
 let output = ref prerr_string
 
+let verbosity = ref 0
+
 let oprintf fmt =
-  Printf.ksprintf !output fmt
+  if !verbosity > 0 then
+    Printf.ksprintf !output fmt
+  else
+    Printf.ikfprintf ignore () fmt
 
 type float_ref = {
   mutable value: float;

@@ -3,7 +3,43 @@ open Fix.Indexing
 open Utils
 open Misc
 
-module Grammar = MenhirSdk.Cmly_read.FromString(Ocaml_grammar)
+let opt_count = ref 1
+let opt_length = ref 100
+let opt_comments = ref false
+let opt_seed = ref (-1)
+let opt_jane = ref false
+
+let spec_list = [
+  ("-n"         , Arg.Set_int opt_count, "<int> Number of lines to generate"  );
+  ("--count"    , Arg.Set_int opt_count, "<int> Number of lines to generate"  );
+  ("-c"         , Arg.Set opt_comments , " Generate fake comments in the lines");
+  ("--comments" , Arg.Set opt_comments , " Generate fake comments in the lines");
+  ("-l"         , Arg.Set_int opt_length, "<int> Number of token per sentence");
+  ("--length"   , Arg.Set_int opt_length, "<int> Number of token per sentence");
+  ("--seed"     , Arg.Set_int opt_seed, "<int> Random seed");
+  ("--jane"     , Arg.Set opt_jane, " Use Jane Street dialect of OCaml");
+  ("-v"         , Arg.Unit (fun () -> incr Stopwatch.verbosity), " Increase verbosity");
+]
+
+let usage_msg = "Usage: ocamlgrammarfuzzer [options]"
+
+let () =
+  Arg.parse spec_list (fun unexpected ->
+      raise (Arg.Bad (Printf.sprintf "Unexpected argument %S" unexpected))
+    ) usage_msg
+
+let () = match !opt_seed with
+  | -1 -> Random.self_init ()
+  |  n -> Random.init n
+
+module Grammar = MenhirSdk.Cmly_read.FromString(struct
+    let content =
+      if !opt_jane then
+        Ocaml_jane_grammar.content
+      else
+        Ocaml_grammar.content
+  end)
+
 module Info = Grammarfuzzer.Info.Make(Grammar)
 module Reachability = Grammarfuzzer.Reachability.Make(Info)()
 
@@ -111,6 +147,8 @@ let rec fuzz size0 cell ~f =
           let index = Random.int (1 + length * (size + 1)) in
           if index > 0 then
             fuzz size (List.nth candidates ((index - 1) / (size + 1))) ~f
+
+let unknown = ref []
 
 let terminals = Vector.init Info.Terminal.n @@
   fun t -> match Info.Terminal.to_string t with
@@ -242,7 +280,35 @@ let terminals = Vector.init Info.Terminal.n @@
   | "METAOCAML_ESCAPE"       -> ".~"
   | "METAOCAML_BRACKET_OPEN" -> ".<"
   | "METAOCAML_BRACKET_CLOSE" -> ">."
-  | x -> x
+  | "error" | "#" as x       -> x ^ "(*FIXME: Should not happen)"
+  | "MOD"           -> "mod"
+  | "EXCLAVE"       -> "exclave_"
+  | "GLOBAL"        -> "global_"
+  | "KIND_ABBREV"   -> "kind_abbrev_"
+  | "KIND_OF"       -> "kind_of_"
+  | "LOCAL"         -> "local_"
+  | "ONCE"          -> "once_"
+  | "OVERWRITE"     -> "overwrite_"
+  | "STACK"         -> "stack_"
+  | "UNIQUE"        -> "unique_"
+  | "LBRACKETCOLON" -> "[:"
+  | "HASH_SUFFIX"   -> "#"
+  | "HASH_INT"      -> "#1"
+  | "HASH_FLOAT"    -> "#1.0"
+  | "HASHLPAREN"    -> "#("
+  | "AT"            -> "@"
+  | "ATAT"          -> "@@"
+  | "COLONRBRACKET" -> ":]"
+  | "DOTHASH"       -> ".#"
+  | "HASHLBRACE"    -> "#{"
+  | x -> push unknown x; x
+
+let () = match !unknown with
+  | [] -> ()
+  | xs ->
+    prerr_endline "Unknown terminals:";
+    List.iter prerr_endline xs;
+    exit 1
 
 let generate_sentence ?(length=100) ?from f =
   let tr = match from with
@@ -266,35 +332,9 @@ let output_with_comments oc =
 let directly_output oc =
   let need_sep = ref false in
   fun t ->
-    if !need_sep then output_char oc '\n';
+    if !need_sep then output_char oc ' ';
     need_sep := true;
     output_string oc terminals.:(t)
-
-let opt_count = ref 1
-let opt_length = ref 100
-let opt_comments = ref false
-let opt_seed = ref (-1)
-
-let spec_list = [
-  ("-n"         , Arg.Set_int opt_count, "<int> Number of lines to generate"  );
-  ("--count"    , Arg.Set_int opt_count, "<int> Number of lines to generate"  );
-  ("-c"         , Arg.Set opt_comments , "Generate fake comments in the lines");
-  ("--comments" , Arg.Set opt_comments , "Generate fake comments in the lines");
-  ("-l"         , Arg.Set_int opt_length, "<int> Number of token per sentence");
-  ("--length"   , Arg.Set_int opt_length, "<int> Number of token per sentence");
-  ("--seed"     , Arg.Set_int opt_seed, "<int> Random seed");
-]
-
-let usage_msg = "Usage: ocamlgrammarfuzzer [options]"
-
-let () =
-  Arg.parse spec_list (fun unexpected ->
-      raise (Arg.Bad (Printf.sprintf "Unexpected argument %S" unexpected))
-    ) usage_msg
-
-let () = match !opt_seed with
-  | -1 -> Random.self_init ()
-  |  n -> Random.init n
 
 let () =
   for _ = 0 to !opt_count - 1 do
@@ -302,5 +342,5 @@ let () =
       (if !opt_comments
        then output_with_comments stdout
        else directly_output stdout);
-    output_char stdout ' '
+    output_char stdout '\n'
   done
