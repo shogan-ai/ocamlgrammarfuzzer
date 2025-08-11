@@ -29,8 +29,17 @@ module IndexSet = Index.Unsafe.Coerce(FSet)(FIntSet)
 include IndexSet
 
 module CoerceSum(X : CARDINAL)(Y : CARDINAL) = struct
-  let coerce : X.n t -> Sum(X)(Y).n t = unsafe_to_indexset
+  let coerce : X.n t -> (X.n, Y.n) Sum.n t = unsafe_to_indexset
 end
+
+let all n =
+  let i = Fix.Indexing.cardinal n in
+  if i = 0 then
+    empty
+  else
+    let a = Index.of_int n 0 in
+    let b = Index.of_int n (i - 1) in
+    init_interval a b
 
 let init_from_set c f =
   match Fix.Indexing.cardinal c with

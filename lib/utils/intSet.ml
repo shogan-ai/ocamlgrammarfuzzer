@@ -124,16 +124,16 @@ let rec fold f s accu =
   | N ->
     accu
   | C (base, ss, qs) ->
-    loop f qs base ss accu
+    loop1 f qs base ss accu
 
-and loop f qs i ss accu =
+and loop1 f qs i ss accu =
   if ss = 0 then
     fold f qs accu
   else
     (* One could in principle check whether [ss land 0x3] is zero and if
        so move to [i + 2] and [ss lsr 2], and similarly for various sizes.
        In practice, this does not seem to make a measurable difference. *)
-    loop f qs (i + 1) (ss lsr 1) (if ss land 1 = 1 then f i accu else accu)
+    loop1 f qs (i + 1) (ss lsr 1) (if ss land 1 = 1 then f i accu else accu)
 
 let map f t =
   fold (fun x xs -> add (f x) xs) t empty
@@ -222,7 +222,14 @@ let quick_subset s1 s2 =
     quick_subset a1 ss1 s2
 
 let mem i s =
-  subset (singleton i) s
+  let ioffset = i mod word_size in
+  let iaddr = i - ioffset and imask = 1 lsl ioffset in
+  let rec loop4 = function
+    | C (a, _, qs) when a < iaddr -> loop4 qs
+    | C (a, ss, _) when a = iaddr -> ss land imask != 0
+    | _ -> false
+  in
+  loop4 s
 
 let rec union s1 s2 =
   match s1, s2 with
@@ -438,16 +445,16 @@ let init_interval i j =
     let word = (1 lsl (j - i + 1) - 1) lsl (i - addr) in
     C (addr, word, N)
   else
-    let rec loop acc addr =
+    let rec loop2 acc addr =
       if addr <= i
       then C (addr, -1 lsl (i - addr), acc)
-      else loop (C (addr, -1, acc)) (addr - word_size)
+      else loop2 (C (addr, -1, acc)) (addr - word_size)
     in
-    loop (C (addr, (-1) lsr (word_size - (j - addr + 1)), N)) (addr - word_size)
+    loop2 (C (addr, (-1) lsr (word_size - (j - addr + 1)), N)) (addr - word_size)
 
 let init_subset i j f =
   let i, j = if i < j then i, j else j, i in
-  let rec loop i addr =
+  let rec loop3 i addr =
     if addr > j then N else
       let addr' = addr + word_size in
       let k = if j < addr' then j else (addr' - 1) in
@@ -457,10 +464,10 @@ let init_subset i j f =
       done;
       let word = !word in
       if word = 0
-      then loop addr' addr'
-      else C (addr, word, loop addr' addr')
+      then loop3 addr' addr'
+      else C (addr, word, loop3 addr' addr')
   in
-  loop i (i - i mod word_size)
+  loop3 i (i - i mod word_size)
 
 let rec filter f = function
   | N -> N
@@ -529,11 +536,18 @@ let allocate qs =
   qs := qs';
   !result
 
-let quick_subset s1 s2 =
-  let result = quick_subset s1 s2 in
-  assert (
-    if result
-    then subset s1 s2
-    else disjoint s1 s2
-  );
-  result
+let rec to_seq q =
+  match q with
+  | N -> Seq.empty
+  | C (addr, mask, q') ->
+    c addr mask q' 0
+
+and c addr mask q' i =
+  if i > word_size then
+    to_seq q'
+  else if mask land (1 lsl i) = 0 then
+    c addr mask q' (i + 1)
+  else
+    fun () -> Seq.Cons (addr + i, c addr mask q' (i + 1))
+
+let bind m f = fold (fun elt acc -> union (f elt) acc) m empty

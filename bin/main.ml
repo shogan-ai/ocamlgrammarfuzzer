@@ -40,8 +40,12 @@ module Grammar = MenhirSdk.Cmly_read.FromString(struct
         Ocaml_grammar.content
   end)
 
-module Info = Grammarfuzzer.Info.Make(Grammar)
-module Reachability = Grammarfuzzer.Reachability.Make(Info)()
+open Grammarfuzzer
+
+include Info.Lift(Grammar)
+
+let reachability = Reachability.make grammar
+module Reach = (val reachability)
 
 open Info
 
@@ -51,38 +55,38 @@ let sample_list l =
   List.nth l (Random.int (List.length l))
 
 let rec fuzz size0 cell ~f =
-  let current_cost = Reachability.Cells.cost cell in
+  let current_cost = Reach.Analysis.cost cell in
   let size = Int.max size0 current_cost in
-  let node, i_pre, i_post = Reachability.Cells.decode cell in
-  match Reachability.Tree.split node with
+  let node, i_pre, i_post = Reach.Cell.decode cell in
+  match Reach.Tree.split node with
   | R (l, r) ->
     let coercion =
-      Reachability.Coercion.infix (Reachability.Tree.post_classes l)
-        (Reachability.Tree.pre_classes r)
+      Reach.Coercion.infix (Reach.Tree.post_classes l)
+        (Reach.Tree.pre_classes r)
     in
-    let l_index = Reachability.Cells.encode l in
-    let r_index = Reachability.Cells.encode r in
+    let l_index = Reach.Cell.encode l in
+    let r_index = Reach.Cell.encode r in
     let candidates = ref [] in
     Array.iteri begin fun i_post_l all_pre_r ->
-      let cl = l_index i_pre i_post_l in
-      let l_cost = Reachability.Cells.cost cl in
+      let cl = l_index ~pre:i_pre ~post:i_post_l in
+      let l_cost = Reach.Analysis.cost cl in
       if l_cost < max_int then
         Array.iter begin fun i_pre_r ->
-          let cr = r_index i_pre_r i_post in
-          let r_cost = Reachability.Cells.cost cr in
+          let cr = r_index ~pre:i_pre_r ~post:i_post in
+          let r_cost = Reach.Analysis.cost cr in
           if r_cost < max_int && l_cost + r_cost <= size then begin
             push candidates (cl, cr)
           end
         end all_pre_r
-    end coercion.Reachability.Coercion.forward;
+    end coercion.Reach.Coercion.forward;
     let (cl, cr) = sample_list !candidates in
-    let sl = Reachability.Cells.cost cl in
-    let sr = Reachability.Cells.cost cr in
+    let sl = Reach.Analysis.cost cl in
+    let sr = Reach.Analysis.cost cr in
     let size = size - sl - sr in
     let mid =
-      if Reachability.Finite.get cl then
+      if Reach.Analysis.finite cl then
         0
-      else if Reachability.Finite.get cr then
+      else if Reach.Analysis.finite cr then
         size
       else
         (Random.int (size + 1) + Random.int (size + 1)) / 2
@@ -90,31 +94,30 @@ let rec fuzz size0 cell ~f =
     fuzz (sl + mid) cl ~f;
     fuzz (sr + (size - mid)) cr ~f
   | L tr ->
-    match Transition.split tr with
+    match Transition.split grammar tr with
     | R shift ->
       (* It is a shift transition, just shift the symbol *)
-      f (Transition.shift_symbol shift)
+      f (Transition.shift_symbol grammar shift)
     | L goto ->
       (* It is a goto transition *)
-      let nullable, non_nullable = Reachability.Tree.goto_equations goto in
-      let c_pre = (Reachability.Tree.pre_classes node).(i_pre) in
-      let c_post = (Reachability.Tree.post_classes node).(i_post) in
+      let eqns = Reach.Tree.goto_equations goto in
+      let c_pre = (Reach.Tree.pre_classes node).(i_pre) in
+      let c_post = (Reach.Tree.post_classes node).(i_post) in
       let nullable =
         (* Check if a nullable reduction is possible *)
-        not (IndexSet.is_empty nullable) &&
-        IndexSet.quick_subset c_post nullable &&
+        not (IndexSet.is_empty eqns.nullable_lookaheads) &&
+        IndexSet.quick_subset c_post eqns.nullable_lookaheads &&
         not (IndexSet.disjoint c_pre c_post)
       in
       if size > 0 || not nullable then
         let candidates =
-          List.filter_map begin fun (node', lookahead) ->
-            if IndexSet.disjoint c_post lookahead then
+          List.filter_map begin fun (reduction, node') ->
+            if IndexSet.disjoint c_post reduction.Reach.lookahead then
               (* The post lookahead class does not permit reducing this
                  production *)
               None
             else
-              let costs = Reachability.Cells.table.:(node') in
-              match Reachability.Tree.pre_classes node' with
+              match Reach.Tree.pre_classes node' with
               | [|c_pre'|] when IndexSet.disjoint c_pre' c_pre ->
                 (* The pre lookahead class does not allow to enter this
                    branch. *)
@@ -130,15 +133,15 @@ let rec fuzz size0 cell ~f =
                 in
                 match
                   Misc.array_findi pred_pre 0 pre',
-                  Misc.array_findi pred_post 0 (Reachability.Tree.post_classes node')
+                  Misc.array_findi pred_post 0 (Reach.Tree.post_classes node')
                 with
                 | exception Not_found -> None
                 | i_pre', i_post' ->
-                  let offset = Reachability.Cells.offset node' i_pre' i_post' in
-                  if costs.(offset) <= size
-                  then Some (Reachability.Cells.encode_offset node' offset)
+                  let cell = Reach.Cell.encode node' ~pre:i_pre' ~post:i_post' in
+                  if Reach.Analysis.cost cell <= size
+                  then Some cell
                   else None
-          end non_nullable
+          end eqns.non_nullable
         in
         if not nullable then
           fuzz size (sample_list candidates) ~f
@@ -150,8 +153,8 @@ let rec fuzz size0 cell ~f =
 
 let unknown = ref []
 
-let terminals = Vector.init Info.Terminal.n @@
-  fun t -> match Info.Terminal.to_string t with
+let terminals = Vector.init (Terminal.cardinal grammar) @@
+  fun t -> match Terminal.to_string grammar t with
   | "AMPERAMPER"             -> "&&"
   | "AMPERSAND"              -> "&"
   | "AND"                    -> "and"
@@ -312,14 +315,14 @@ let () = match !unknown with
 
 let generate_sentence ?(length=100) ?from f =
   let tr = match from with
-    | None -> IndexSet.choose Transition.accepting
+    | None -> IndexSet.choose (Transition.accepting grammar)
     | Some tr -> tr
   in
-  let tr = Transition.of_goto tr in
-  assert (Array.length (Reachability.Classes.pre_transition tr) = 1);
-  assert (Array.length (Reachability.Classes.post_transition tr) = 1);
-  let node = Reachability.Tree.leaf tr in
-  let cell = Reachability.Cells.encode node 0 0 in
+  let tr = Transition.of_goto grammar tr in
+  assert (Array.length (Reach.Classes.pre_transition tr) = 1);
+  assert (Array.length (Reach.Classes.post_transition tr) = 1);
+  let node = Reach.Tree.leaf tr in
+  let cell = Reach.Cell.encode node ~pre:0 ~post:0 in
   fuzz length cell ~f
 
 let output_with_comments oc =

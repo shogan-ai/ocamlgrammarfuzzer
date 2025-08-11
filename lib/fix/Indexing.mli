@@ -70,6 +70,14 @@ end
    set whose cardinal is [c]. [c] must be nonnegative. *)
 module Const (X : sig val cardinal : int end) : CARDINAL
 
+module type UNSAFE_CARDINAL = sig
+  type 'a t
+  module Const(M : sig type t val cardinal : int end) : CARDINAL with type n = M.t t
+  module Eq(M : sig type t include CARDINAL end) : sig val eq : (M.t t, M.n) eq end
+end
+
+module Unsafe_cardinal() : UNSAFE_CARDINAL
+
 (**The function {!const} is a value-level analogue of the functor {!Const}. *)
 val const : int -> (module CARDINAL)
 
@@ -105,19 +113,6 @@ type ('l, 'r) either =
   | L of 'l
   | R of 'r
 
-(**The signature {!SUM} extends {!CARDINAL} with an explicit isomorphism between
-   the set [n] and the disjoint sum [l + r]. The functions [inj_l] and [inj_r]
-   convert an index into [l] or an index into [r] into an index into [n].
-   Conversely, the function [prj] converts an index into [r] into either an
-   index into [l] or an index into [r]. *)
-module type SUM = sig
-  type l and r
-  include CARDINAL
-  val inj_l : l index -> n index
-  val inj_r : r index -> n index
-  val prj : n index -> (l index, r index) either
-end
-
 (**[Sum(L)(R)] creates a new type-level set, which is the disjoint sums of the
    sets [L] and [R]. The functor application [Sum(L)(R)] involves a call to
    [cardinal L.n], thereby fixing the cardinal of the set [L], if it was an
@@ -125,27 +120,57 @@ end
    open-ended set, then the new set is open-ended as well, and it is still
    permitted to add new elements to [R] by calling [R.fresh()]. Fixing the
    cardinal of the new set fixes the cardinal of [R]. *)
-module Sum (L : CARDINAL)(R : CARDINAL) :
-  SUM with type l := L.n
-       and type r := R.n
+module Sum : sig
+  type (_, _) n
 
-(**The function {!sum} is a value-level analogue of the functor {!Sum}. *)
-val sum : 'l cardinal -> 'r cardinal ->
-  (module SUM with type l = 'l and type r = 'r)
+  val cardinal : 'l cardinal -> 'r cardinal -> ('l, 'r) n cardinal
+  val inj_l : 'l index -> ('l, 'r) n index
+  val inj_r : 'l cardinal -> 'r index -> ('l, 'r) n index
+  val prj : 'l cardinal -> ('l, 'r) n index -> ('l index, 'r index) either
 
-module type PROD = sig
-  type l and r
-  include CARDINAL
-  val inj : l index -> r index -> n index
-  val prj : n index -> l index * r index
+  (**The signature {!SUM} extends {!CARDINAL} with an explicit isomorphism between
+     the set [n] and the disjoint sum [l + r]. The functions [inj_l] and [inj_r]
+     convert an index into [l] or an index into [r] into an index into [n].
+     Conversely, the function [prj] converts an index into [r] into either an
+     index into [l] or an index into [r]. *)
+  module type S = sig
+    type l and r
+    type nonrec n = (l, r) n
+    include CARDINAL with type n := n
+    val inj_l : l index -> n index
+    val inj_r : r index -> n index
+    val prj : n index -> (l index, r index) either
+  end
+
+  module Make (L : CARDINAL)(R : CARDINAL) : S with type l := L.n
+                                                and type r := R.n
+
+  (**The function {!sum} is a value-level analogue of the functor {!Sum}. *)
+  val make : 'l cardinal -> 'r cardinal ->
+             (module S with type l = 'l and type r = 'r)
 end
 
-module Prod (L : CARDINAL)(R : CARDINAL) :
-  PROD with type l := L.n
-       and type r := R.n
+module Prod : sig
+  type (_, _) n
 
-val prod : 'l cardinal -> 'r cardinal ->
-  (module PROD with type l = 'l and type r = 'r)
+  val cardinal : 'l cardinal -> 'r cardinal -> ('l, 'r) n cardinal
+  val inj : 'l cardinal -> 'l index -> 'r index -> ('l, 'r) n index
+  val prj : 'l cardinal -> ('l, 'r) n index -> 'l index * 'r index
+
+  module type S = sig
+    type l and r
+    type nonrec n = (l, r) n
+    include CARDINAL with type n := n
+    val inj : l index -> r index -> n index
+    val prj : n index -> l index * r index
+  end
+
+  module Make (L : CARDINAL)(R : CARDINAL) : S with type l := L.n
+                                                and type r := R.n
+
+  val make : 'l cardinal -> 'r cardinal ->
+             (module S with type l = 'l and type r = 'r)
+end
 
 (**The submodule {!Index} allows safely manipulating indices
    into a finite set. *)
@@ -170,6 +195,9 @@ module Index : sig
   (**[rev_iter n yield] calls [yield i] successively for every index in the range
      [\[0, n)], in decreasing order. *)
   val rev_iter : 'n cardinal -> ('n index -> unit) -> unit
+
+  (** [pred i] is the index immediately before [i], if [i] is non-zero *)
+  val pred : 'n index -> 'n index option
 
   (**This exception is raised by an iterator (created by {!enumerate}) that is
      queried after it has been exhausted. *)
@@ -216,6 +244,7 @@ module Vector : sig
   (**{!length} is analogous to [Array.length], but returns a cardinal instead
      of an ordinary integer. *)
   val length : ('n, 'a) t -> 'n cardinal
+  val length_as_int : ('n, 'a) t -> int
 
   (**{!get} is [Array.get], but expects an index instead of an ordinary
      integer. This guarantees that the index is within bounds. *)
@@ -250,6 +279,10 @@ module Vector : sig
 
   val copy : ('n, 'a) t -> ('n, 'a) t
   val mapi : ('n index -> 'a -> 'b) -> ('n, 'a) t -> ('n, 'b) t
+
+  val for_all : ('a -> bool) -> ('n, 'a) t -> bool
+  val exists : ('a -> bool) -> ('n, 'a) t -> bool
+
   val iter : ('a -> unit) -> ('n, 'a) t -> unit
   val iteri : ('n index -> 'a -> unit) -> ('n, 'a) t -> unit
   val iter2 : ('a -> 'b -> unit) -> ('n, 'a) t -> ('n, 'b) t -> unit
@@ -257,10 +290,16 @@ module Vector : sig
   val rev_iteri : ('n index -> 'a -> unit) -> ('n, 'a) t -> unit
 
   val fold_left : ('a -> 'b -> 'a) -> 'a -> (_, 'b) t -> 'a
-  val fold_right : ('b -> 'a -> 'a) -> (_, 'b) t -> 'a -> 'a
-
   val fold_left2 : ('a -> 'b -> 'c -> 'a) -> 'a -> ('n, 'b) t -> ('n, 'c) t -> 'a
+
+  val fold_lefti : ('a -> 'n index -> 'b -> 'a) -> 'a -> ('n, 'b) t -> 'a
+  val fold_lefti2 : ('a -> 'n index -> 'b -> 'c -> 'a) -> 'a -> ('n, 'b) t -> ('n, 'c) t -> 'a
+
+  val fold_right : ('b -> 'a -> 'a) -> (_, 'b) t -> 'a -> 'a
   val fold_right2 : ('b -> 'c -> 'a -> 'a) -> ('n, 'b) t -> ('n, 'c) t -> 'a -> 'a
+
+  val fold_righti : ('n index -> 'b -> 'a -> 'a) -> ('n, 'b) t -> 'a -> 'a
+  val fold_righti2 : ('n index -> 'b -> 'c -> 'a -> 'a) -> ('n, 'b) t -> ('n, 'c) t -> 'a -> 'a
 
   val cast_array : 'n cardinal -> 'a array -> ('n, 'a) t
   val as_array : (_, 'a) t -> 'a array

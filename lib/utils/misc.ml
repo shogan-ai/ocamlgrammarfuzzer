@@ -34,15 +34,13 @@ let array_split a =
 
 let array_compare cmp a1 a2 =
   let len = Array.length a1 in
-  let c = Int.compare len (Array.length a2) in
-  if c <> 0 then c else
-    let rec loop i len =
-      if i = len then 0 else
-        let c = cmp a1.(i) a2.(i) in
-        if c <> 0 then c else
-          loop (i + 1) len
-    in
-    loop 0 len
+  let c = ref (Int.compare len (Array.length a2)) in
+  let i = ref 0 in
+  while !c = 0 && !i < len do
+    c := cmp a1.(!i) a2.(!i);
+    incr i
+  done;
+  !c
 
 (** [group ~compare ~group list]
     Group togethers the elements of [list] that are equivalent according to
@@ -89,6 +87,21 @@ type 'a indexset = 'a IndexSet.t
 (** Convenient alias for [IndexMap] *)
 type ('n, 'a) indexmap = ('n, 'a) IndexMap.t
 
+(** A function for consing a value when using Map.update *)
+let cons_update x = function
+  | None -> Some [x]
+  | Some xs -> Some (x :: xs)
+
+(** A function for adding an element to a set when using Map.update *)
+let add_update x = function
+  | None -> Some (IndexSet.singleton x)
+  | Some y -> Some (IndexSet.add x y)
+
+(** A function for unioning sets when using Map.update *)
+let union_update x = function
+  | None -> Some x
+  | Some y -> Some (IndexSet.union x y)
+
 (** Optimize stdlib's (@) to avoid copying the lhs when the rhs is empty *)
 let (@) l1 l2 =
   match l1, l2 with
@@ -106,11 +119,6 @@ let index_fold n a f =
   let a = ref a in
   Index.iter n (fun i -> a := f i !a);
   !a
-
-(** [indexset_bind s f] returns the union of all sets [f i] for [i] in [s] *)
-let indexset_bind : 'a indexset -> ('a index -> 'b indexset) -> 'b indexset =
-  fun s f ->
-  IndexSet.fold_right (fun acc lr1 -> IndexSet.union (f lr1) acc) IndexSet.empty s
 
 (** Vector get *)
 let (.:()) = Vector.get
@@ -145,23 +153,26 @@ let fix_relation  (relation : ('n, 'n indexset) vector) (values : ('n, 'a) vecto
     ~(propagate : 'n index -> 'a -> 'n index -> 'a -> 'a)
   =
   let n = Vector.length values in
-  let marks = IndexMarks.make n in
+  let marked = ref true in
+  let marks = Boolvector.make n true in
   let update i =
-    let value = values.:(i) in
-    IndexSet.rev_iter (fun j ->
-        let value' = values.:(j) in
-        let value'' = propagate i value j value' in
-        if value' != value'' then (
-          values.:(j) <- value'';
-          IndexMarks.mark marks j
-        )
-      ) relation.:(i)
+    if Boolvector.test marks i then (
+      Boolvector.clear marks i;
+      let value = values.:(i) in
+      IndexSet.rev_iter (fun j ->
+          let value' = values.:(j) in
+          let value'' = propagate i value j value' in
+          if value' != value'' then (
+            values.:(j) <- value'';
+            Boolvector.set marks j;
+            marked := true
+          )
+        ) relation.:(i)
+    )
   in
-  Index.iter n update;
-  while not (IndexMarks.is_empty marks) do
-    let todo = IndexMarks.marked marks in
-    IndexMarks.clear marks;
-    IndexSet.rev_iter update todo
+  while !marked do
+    marked := false;
+    Index.rev_iter n update
   done
 
 let close_relation ?reverse rel =
@@ -171,12 +182,6 @@ let close_relation ?reverse rel =
   in
   fix_relation rev rel
     ~propagate:(fun _ v _ v' -> IndexSet.union v v')
-
-let relation_closure ?reverse rel =
-  let rel = Vector.copy rel in
-  close_relation ?reverse rel;
-  rel
-
 
 (** Equality on indices *)
 let equal_index =
@@ -319,3 +324,150 @@ let rec fixpoint ?counter ~propagate todo = match !todo with
     List.iter propagate todo';
     fixpoint ?counter ~propagate todo
 
+let assert_equal_length v1 v2 =
+  assert_equal_cardinal (Vector.length v1) (Vector.length v2)
+
+let bytes_match b i str =
+  Bytes.length b >= i + String.length str &&
+  let exception Exit in
+  match
+    for j = 0 to String.length str - 1 do
+      if Bytes.get b (i + j) <> String.get str j then
+        raise Exit
+    done
+  with
+  | () -> true
+  | exception Exit -> false
+
+let verbosity_level = ref 0
+
+let stopwatch_delta =
+  let last = ref [] in
+  fun level ->
+  let rec visit = function
+    | (level', _) :: acc when level' > level ->
+      visit acc
+    | [] -> 0.0, []
+    | (level', time) :: acc when level' = level ->
+      (time, acc)
+    | (_, time) :: _ as acc ->
+      time, acc
+  in
+  let time = Sys.time () in
+  let time', last' = visit !last in
+  last := (level, time) :: last';
+  (time -. time')
+
+let stopwatch_counter = ref 0
+
+let stopwatch_perfs =
+  ref @@
+  match Sys.getenv_opt "STOPWATCH_PERF" with
+  | None -> []
+  | Some list ->
+    let steps = String.split_on_char ',' list in
+    List.mapi (fun i step ->
+        (i land 1 = 0),
+        int_of_string step
+      ) steps
+
+let stopwatch_perf_step i =
+  match !stopwatch_perfs with
+  | (_, j) :: _ as steps when j <= i ->
+    let result = ref None in
+    let rec loop = function
+      | [] -> []
+      | (_, j) :: _ as rest when j > i ->
+        rest
+      | (_, j) :: rest when j < i ->
+        loop rest
+      | (result', _) :: rest ->
+        result := Some result';
+        loop rest
+    in
+    stopwatch_perfs := loop steps;
+    !result
+  | _ -> None
+
+let stopwatch level fmt =
+  if level <= !verbosity_level then (
+    let delta = stopwatch_delta level in
+    incr stopwatch_counter;
+    let perf_status = stopwatch_perf_step !stopwatch_counter in
+    if perf_status = Some false then Perfctl.disable ();
+    if delta < 10.
+    then Printf.eprintf "[%03d: % 5.0fms]" !stopwatch_counter (delta *. 1000.)
+    else Printf.eprintf "[%03d: % 5.01fs]" !stopwatch_counter delta;
+    Printf.fprintf stderr "%s-> " (String.make level ' ');
+    Printf.kfprintf (fun _ ->
+        prerr_newline ();
+        if perf_status = Some true then Perfctl.enable ();
+      ) stderr fmt
+  ) else
+    Printf.ifprintf stderr fmt
+
+let rewrite_keywords f (pos : Lexing.position) str =
+  let b = Bytes.of_string str in
+  let l = Bytes.length b in
+  let i = ref 0 in
+  let pos_lnum = ref pos.pos_lnum in
+  let pos_bol = ref pos.pos_bol in
+  let nl () =
+    pos_bol := pos.pos_cnum + !i;
+    incr pos_lnum
+  in
+  let escape () =
+    if !i < l && Bytes.get b !i = '\n' then
+      (incr i; nl ())
+    else
+      incr i
+  in
+  while !i < l do
+    match Bytes.get b !i with
+    | '\n' -> incr i; nl ()
+    | '\\' -> incr i; escape ()
+    (* Look for $ident(ident) *)
+    | '$' ->
+      let dollar = !i in
+      incr i;
+      let in_range a b c = a <= b && b <= c in
+      let is_ident c =
+        in_range 'a' c 'z' || in_range 'A' c 'Z' ||
+        in_range '0' c '9' || (c = '_') || (c = '\'')
+      in
+      while !i < l && is_ident (Bytes.get b !i)
+      do incr i done;
+      if !i < l && Bytes.get b !i = '(' then (
+        let lpar = !i in
+        incr i;
+        while !i < l && is_ident (Bytes.get b !i) do
+          incr i
+        done;
+        if !i < l && Bytes.get b !i = ')' then (
+          let rpar = !i in
+          let kw = Bytes.sub_string b dollar (lpar - dollar) in
+          let arg = Bytes.sub_string b (lpar + 1) (rpar - lpar - 1) in
+          let pos = {pos with pos_lnum = !pos_lnum; pos_bol = !pos_bol;
+                              pos_cnum = pos.pos_cnum + dollar} in
+          if f pos kw arg then (
+            Bytes.set b dollar '_';
+            Bytes.set b lpar '_';
+            Bytes.set b rpar '_';
+          )
+        )
+      )
+    (* Skip strings *)
+    | '"' ->
+      incr i;
+      while !i < l &&
+            let c = Bytes.get b !i in
+            incr i;
+            match c with
+            | '"' -> false
+            | '\n' -> nl (); true
+            | '\\' -> escape (); true
+            | _ -> true
+      do () done
+    | _ -> incr i
+  done;
+  Bytes.to_string b

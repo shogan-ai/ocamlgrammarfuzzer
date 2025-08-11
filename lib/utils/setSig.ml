@@ -172,6 +172,9 @@ module type S1 = sig
   val split: 'a element -> 'a t -> 'a t * bool * 'a t
   val find : ('a element -> bool) -> 'a t -> 'a element
   val find_map : ('a element -> 'b option) -> 'a t -> 'b option
+
+  val to_seq : 'a t -> 'a element Seq.t
+  val bind : 'a t -> ('a element -> 'b t) -> 'b t
 end
 
 module type S0 = sig
