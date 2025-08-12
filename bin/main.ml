@@ -54,31 +54,72 @@ let () = Random.self_init ()
 let sample_list l =
   List.nth l (Random.int (List.length l))
 
+let iter_sub_nodes ~f i_pre i_post l r =
+  let coercion =
+    Reach.Coercion.infix (Reach.Tree.post_classes l)
+      (Reach.Tree.pre_classes r)
+  in
+  let l_index = Reach.Cell.encode l in
+  let r_index = Reach.Cell.encode r in
+  Array.iteri begin fun i_post_l all_pre_r ->
+    let cl = l_index ~pre:i_pre ~post:i_post_l in
+    let l_cost = Reach.Analysis.cost cl in
+    if l_cost < max_int then
+      let f' = f cl in
+      Array.iter begin fun i_pre_r ->
+        let cr = r_index ~pre:i_pre_r ~post:i_post in
+        f' cr
+      end all_pre_r
+  end coercion.Reach.Coercion.forward
+
+let iter_eqns ~f i_pre i_post goto =
+  let tr = Transition.of_goto grammar goto in
+  let c_pre = (Reach.Classes.pre_transition tr).(i_pre) in
+  let c_post = (Reach.Classes.post_transition tr).(i_post) in
+  let eqns = Reach.Tree.goto_equations goto in
+  List.iter begin fun (reduction, node') ->
+    if IndexSet.disjoint c_post reduction.Reach.lookahead then
+      (* The post lookahead class does not permit reducing this
+         production *)
+      ()
+    else
+      match Reach.Tree.pre_classes node' with
+      | [|c_pre'|] when IndexSet.disjoint c_pre' c_pre ->
+        (* The pre lookahead class does not allow to enter this
+           branch. *)
+        ()
+      | pre' ->
+        (* Visit all lookahead classes, pre and post, and find
+           the mapping between the parent node and this
+           sub-node *)
+        let pred_pre _ c_pre' =
+          IndexSet.quick_subset c_pre' c_pre
+        and pred_post _ c_post' =
+          IndexSet.quick_subset c_post c_post'
+        in
+        match
+          Misc.array_findi pred_pre 0 pre',
+          Misc.array_findi pred_post 0 (Reach.Tree.post_classes node')
+        with
+        | exception Not_found -> ()
+        | i_pre', i_post' ->
+          f (Reach.Cell.encode node' ~pre:i_pre' ~post:i_post')
+  end eqns.non_nullable
+
 let rec fuzz size0 cell ~f =
   let current_cost = Reach.Analysis.cost cell in
   let size = Int.max size0 current_cost in
   let node, i_pre, i_post = Reach.Cell.decode cell in
   match Reach.Tree.split node with
   | R (l, r) ->
-    let coercion =
-      Reach.Coercion.infix (Reach.Tree.post_classes l)
-        (Reach.Tree.pre_classes r)
-    in
-    let l_index = Reach.Cell.encode l in
-    let r_index = Reach.Cell.encode r in
     let candidates = ref [] in
-    Array.iteri begin fun i_post_l all_pre_r ->
-      let cl = l_index ~pre:i_pre ~post:i_post_l in
-      let l_cost = Reach.Analysis.cost cl in
-      if l_cost < max_int then
-        Array.iter begin fun i_pre_r ->
-          let cr = r_index ~pre:i_pre_r ~post:i_post in
+    iter_sub_nodes i_pre i_post l r ~f:(fun cl ->
+        let l_cost = Reach.Analysis.cost cl in
+        fun cr ->
           let r_cost = Reach.Analysis.cost cr in
-          if r_cost < max_int && l_cost + r_cost <= size then begin
+          if r_cost < max_int && l_cost + r_cost <= size then
             push candidates (cl, cr)
-          end
-        end all_pre_r
-    end coercion.Reach.Coercion.forward;
+      );
     let (cl, cr) = sample_list !candidates in
     let sl = Reach.Analysis.cost cl in
     let sr = Reach.Analysis.cost cr in
@@ -110,39 +151,12 @@ let rec fuzz size0 cell ~f =
         not (IndexSet.disjoint c_pre c_post)
       in
       if size > 0 || not nullable then
-        let candidates =
-          List.filter_map begin fun (reduction, node') ->
-            if IndexSet.disjoint c_post reduction.Reach.lookahead then
-              (* The post lookahead class does not permit reducing this
-                 production *)
-              None
-            else
-              match Reach.Tree.pre_classes node' with
-              | [|c_pre'|] when IndexSet.disjoint c_pre' c_pre ->
-                (* The pre lookahead class does not allow to enter this
-                   branch. *)
-                None
-              | pre' ->
-                (* Visit all lookahead classes, pre and post, and find
-                   the mapping between the parent node and this
-                   sub-node *)
-                let pred_pre _ c_pre' =
-                  IndexSet.quick_subset c_pre' c_pre
-                and pred_post _ c_post' =
-                  IndexSet.quick_subset c_post c_post'
-                in
-                match
-                  Misc.array_findi pred_pre 0 pre',
-                  Misc.array_findi pred_post 0 (Reach.Tree.post_classes node')
-                with
-                | exception Not_found -> None
-                | i_pre', i_post' ->
-                  let cell = Reach.Cell.encode node' ~pre:i_pre' ~post:i_post' in
-                  if Reach.Analysis.cost cell <= size
-                  then Some cell
-                  else None
-          end eqns.non_nullable
-        in
+        let candidates = ref [] in
+        iter_eqns i_pre i_post goto ~f:(fun cell ->
+            if Reach.Analysis.cost cell <= size then
+              push candidates cell
+          );
+        let candidates = !candidates in
         if not nullable then
           fuzz size (sample_list candidates) ~f
         else
@@ -151,25 +165,41 @@ let rec fuzz size0 cell ~f =
           if index > 0 then
             fuzz size (List.nth candidates ((index - 1) / (size + 1))) ~f
 
+let () = Misc.stopwatch 0 "Start BFS"
+
 let bfs = Vector.make Reach.Cell.n ([], [])
 
 let () =
   let todo = ref [] in
-  let visit node parent =
-    match bfs.:(node) with
+  let visit parent cell =
+    match bfs.:(cell) with
     | (_::_, _) | (_, _::_ ) -> ()
     | ([], []) ->
-      bfs.:(node) <- parent;
-      push todo node
+      bfs.:(cell) <- parent;
+      push todo cell
   in
-  let propagate node =
-    let prefix, suffix = bfs.:(node) in
-
+  let propagate cell =
+    let prefix, suffix as path = bfs.:(cell) in
+    let node, i_pre, i_post = Reach.Cell.decode cell in
+    match Reach.Tree.split node with
+    | R (l, r) ->
+      iter_sub_nodes ~f:(fun cl cr ->
+          visit (prefix, cr :: suffix) cl;
+          visit (cl :: prefix, suffix) cr;
+        ) i_pre i_post l r
+    | L tr ->
+      match Transition.split grammar tr with
+      | R _ -> ()
+      | L gt ->
+        iter_eqns i_pre i_post gt ~f:(visit path)
   in
-  Transition.accepting grammar |> IndexSet.iter @@ fun tr ->
-  let node = Reach.Tree.leaf (Transition.of_goto grammar tr) in
-  ()
-
+  IndexSet.iter (fun tr ->
+      let node = Reach.Tree.leaf (Transition.of_goto grammar tr) in
+      visit ([],[]) (Reach.Cell.encode node ~pre:0 ~post:0)
+    ) (Transition.accepting grammar);
+  let counter = ref 0 in
+  fixpoint ~counter ~propagate todo;
+  Misc.stopwatch 0 "Stop BFS (depth: %d)" !counter
 
 let unknown = ref []
 
