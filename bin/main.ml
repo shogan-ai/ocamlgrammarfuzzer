@@ -151,6 +151,26 @@ let rec fuzz size0 cell ~f =
           if index > 0 then
             fuzz size (List.nth candidates ((index - 1) / (size + 1))) ~f
 
+let bfs = Vector.make Reach.Cell.n ([], [])
+
+let () =
+  let todo = ref [] in
+  let visit node parent =
+    match bfs.:(node) with
+    | (_::_, _) | (_, _::_ ) -> ()
+    | ([], []) ->
+      bfs.:(node) <- parent;
+      push todo node
+  in
+  let propagate node =
+    let prefix, suffix = bfs.:(node) in
+
+  in
+  Transition.accepting grammar |> IndexSet.iter @@ fun tr ->
+  let node = Reach.Tree.leaf (Transition.of_goto grammar tr) in
+  ()
+
+
 let unknown = ref []
 
 let terminals = Vector.init (Terminal.cardinal grammar) @@
@@ -338,6 +358,9 @@ let directly_output oc =
     if !need_sep then output_char oc ' ';
     need_sep := true;
     output_string oc terminals.:(t)
+
+let () =
+  Printf.eprintf "%d cells\n" (cardinal Reach.Cell.n)
 
 let () =
   for _ = 0 to !opt_count - 1 do
