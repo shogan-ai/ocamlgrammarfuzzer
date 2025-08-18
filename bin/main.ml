@@ -13,6 +13,7 @@ let opt_entrypoints = ref []
 let opt_weights = ref []
 let opt_avoid = ref []
 let opt_focus = ref []
+let opt_exhaust = ref false
 
 let spec_list = [
   (* ("-n"         , Arg.Set_int opt_count, "<int> Number of lines to generate"  ); *)
@@ -28,6 +29,7 @@ let spec_list = [
   ("--weight", Arg.String (push opt_weights), " Adjust the weights of grammatical constructions");
   ("--avoid", Arg.String (push opt_avoid), " Forbid grammatical constructions");
   ("--focus", Arg.String (push opt_focus), " Generate sentences stressing a grammatical construction");
+  ("--exhaust", Arg.Set opt_exhaust, " Exhaust mode generates a deterministic set of sentences that cover all reachable constructions");
 ]
 
 let usage_msg = "Usage: ocamlgrammarfuzzer [options]"
@@ -498,7 +500,7 @@ let () =
     |> List.map (fun tr -> tr, 1.0)
   in
   match List.rev !opt_focus with
-  | [] ->
+  | [] when not !opt_exhaust ->
     for _ = 0 to !opt_count - 1 do
       let derivation =
         generate_sentence
@@ -509,57 +511,59 @@ let () =
       output_char stdout '\n'
     done
   | focus ->
-    let focused_sym = Boolvector.make (Symbol.cardinal grammar) false in
-    let focused_prods = Boolvector.make (Production.cardinal grammar) false in
-    let focused_items = Vector.make (Production.cardinal grammar) IntSet.empty in
-    let process_focus filter =
-      match transl_filter filter with
-      | Either.Left sym ->
-        Boolvector.set focused_sym sym
-      | Either.Right prods ->
-        List.iter (fun (prod, dots) ->
-            if IntSet.is_empty dots
-            then Boolvector.set focused_prods prod
-            else focused_items.@(prod) <- IntSet.union dots
-          ) prods
-    in
-    List.iter (fun spec -> process_focus (parse_pattern spec)) focus;
-    let todo = Boolvector.make Reach.Cell.n false in
-    let set_node node = Reach.Cell.iter_node node (Boolvector.set todo) in
-    Index.iter (Transition.any grammar) (fun tr ->
-        if Boolvector.test focused_sym (Transition.symbol grammar tr) then
-          set_node (Reach.Tree.leaf tr)
-      );
-    let rec visit_items i node f =
-      f node i;
-      let i =
-        match Reach.Tree.split node with
-        | L _ -> i + 1
-        | R (l, r) ->
-          let i = visit_items i l f in
-          let i = visit_items i r f in
-          i
+    let todo = Boolvector.make Reach.Cell.n !opt_exhaust in
+    if not !opt_exhaust then (
+      let focused_sym = Boolvector.make (Symbol.cardinal grammar) false in
+      let focused_prods = Boolvector.make (Production.cardinal grammar) false in
+      let focused_items = Vector.make (Production.cardinal grammar) IntSet.empty in
+      let process_focus filter =
+        match transl_filter filter with
+        | Either.Left sym ->
+          Boolvector.set focused_sym sym
+        | Either.Right prods ->
+          List.iter (fun (prod, dots) ->
+              if IntSet.is_empty dots
+              then Boolvector.set focused_prods prod
+              else focused_items.@(prod) <- IntSet.union dots
+            ) prods
       in
-      f node i;
-      i
-    in
-    Index.iter (Transition.goto grammar) (fun gt ->
-        let eqns = Reach.Tree.goto_equations gt in
-        if List.exists
-            (fun {Reach.production; _} -> Boolvector.test focused_prods production)
-            eqns.nullable then
-          set_node (Reach.Tree.leaf (Transition.of_goto grammar gt));
-        List.iter begin fun (red, node) ->
-          if Boolvector.test focused_prods red.Reach.production then
-            set_node node;
-          let dots = focused_items.:(red.Reach.production) in
-          if not (IntSet.is_empty dots) then
-            ignore (visit_items 0 node (fun node i ->
-                if IntSet.mem i dots then
-                  set_node node
-              ) : int)
-        end eqns.non_nullable;
-      );
+      List.iter (fun spec -> process_focus (parse_pattern spec)) focus;
+      let set_node node = Reach.Cell.iter_node node (Boolvector.set todo) in
+      Index.iter (Transition.any grammar) (fun tr ->
+          if Boolvector.test focused_sym (Transition.symbol grammar tr) then
+            set_node (Reach.Tree.leaf tr)
+        );
+      let rec visit_items i node f =
+        f node i;
+        let i =
+          match Reach.Tree.split node with
+          | L _ -> i + 1
+          | R (l, r) ->
+            let i = visit_items i l f in
+            let i = visit_items i r f in
+            i
+        in
+        f node i;
+        i
+      in
+      Index.iter (Transition.goto grammar) (fun gt ->
+          let eqns = Reach.Tree.goto_equations gt in
+          if List.exists
+              (fun {Reach.production; _} -> Boolvector.test focused_prods production)
+              eqns.nullable then
+            set_node (Reach.Tree.leaf (Transition.of_goto grammar gt));
+          List.iter begin fun (red, node) ->
+            if Boolvector.test focused_prods red.Reach.production then
+              set_node node;
+            let dots = focused_items.:(red.Reach.production) in
+            if not (IntSet.is_empty dots) then
+              ignore (visit_items 0 node (fun node i ->
+                  if IntSet.mem i dots then
+                    set_node node
+                ) : int)
+          end eqns.non_nullable;
+        );
+    );
     Index.iter Reach.Cell.n (fun cell ->
         if Reach.Analysis.cost cell < max_int && Boolvector.test todo cell then (
           match bfs.:(cell) with
