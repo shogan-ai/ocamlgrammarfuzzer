@@ -226,11 +226,37 @@ let iter_eqns ~f i_pre i_post goto =
           f reduction (Reach.Cell.encode node' ~pre:i_pre' ~post:i_post')
   end eqns.non_nullable
 
-(* [fuzz size0 cell ~f] generates a sentence in the langauge recognized by
-   [cell] that tries to have size [size0].
-   The callback [f] is called for each terminal of the sentence, in order,
-   and [fuzz] returns the number of terminals actually generated. *)
-let rec fuzz size0 cell ~f =
+type derivation =
+  | Null of {
+      cell: Reach.Cell.n index;
+    }
+  | Shift of {
+      cell: Reach.Cell.n index;
+      terminal: g terminal index;
+    }
+  | Node of {
+      cell: Reach.Cell.n index;
+      left: derivation;
+      right: derivation;
+    }
+  | Expand of {
+      cell: Reach.Cell.n index;
+      expansion: derivation;
+      reduction: Reach.reduction;
+    }
+
+let derivation_cell ( Null {cell} | Shift {cell; _}
+                    | Node {cell; _} | Expand {cell; _}) =
+  cell
+
+let _ = ignore derivation_cell
+
+(* [fuzz target_length cell] generates a derivation of [cell] aiming to have
+   [target_length] terminals.
+   The result is a pair [actual_length, derivation] where [actual_length] is the
+   actual number of terminals.
+*)
+let rec fuzz size0 cell =
   let current_cost = Reach.Analysis.cost cell in
   let size = Int.max size0 current_cost in
   let node, i_pre, i_post = Reach.Cell.decode cell in
@@ -256,21 +282,21 @@ let rec fuzz size0 cell ~f =
       else
         (Random.int (size + 1) + Random.int (size + 1)) / 2
     in
-    let left_length = fuzz (sl + mid) cl ~f in
+    let left_length, left = fuzz (sl + mid) cl in
     (* Bias right side:
        - first set an expectation on the position of the split
          between left and right side,
        - generate left side targetting the split position
        - compensate on right side if left side missed expectation
     *)
-    let right_length = fuzz (size - left_length) cr ~f in
-    left_length + right_length
+    let right_length, right = fuzz (size - left_length) cr in
+    (left_length + right_length, Node {cell; left; right})
   | L tr ->
     match Transition.split grammar tr with
     | R shift ->
-      (* It is a shift transition, just shift the symbol *)
-      f (Transition.shift_symbol grammar shift);
-      1
+      (* We reached a shift transition *)
+      let terminal = Transition.shift_symbol grammar shift in
+      (1, Shift {cell; terminal})
     | L goto ->
       (* It is a goto transition *)
       let eqns = Reach.Tree.goto_equations goto in
@@ -283,7 +309,7 @@ let rec fuzz size0 cell ~f =
         not (IndexSet.disjoint c_pre c_post)
       in
       if size <= 0 && nullable then
-        0
+        (0, Null {cell})
       else
         let candidates = ref (
             (* Compute weight of nullable case *)
@@ -304,11 +330,14 @@ let rec fuzz size0 cell ~f =
         (* Add recursive candidates *)
         iter_eqns i_pre i_post goto ~f:(fun reduction cell ->
             if Reach.Analysis.cost cell <= size then
-              push candidates (Some cell, weights.:(reduction.production))
+              push candidates (Some (reduction, cell),
+                               weights.:(reduction.production))
           );
         match sample_list !candidates with
-        | None -> 0
-        | Some cell -> fuzz size cell ~f
+        | None -> (0, Null {cell})
+        | Some (reduction, cell) ->
+          let length, expansion = fuzz size cell in
+          (length, Expand {cell; expansion; reduction})
 
 let () = Misc.stopwatch 1 "Start BFS"
 
@@ -364,7 +393,27 @@ let () =
 
 let terminal_text = Token_printer.for_grammar grammar []
 
-let generate_sentence ?(length=100) ?from f =
+let terminals_of_derivation der =
+  let rec loop acc = function
+    | Null _ -> acc
+    | Shift  {terminal; _} -> terminal :: acc
+    | Node   {left; right; _} -> loop (loop acc right) left
+    | Expand {expansion; _} -> loop acc expansion
+  in
+  loop [] der
+
+let _ = terminals_of_derivation
+
+let rec iter_terminals_of_derivation ~f = function
+  | Null _ -> ()
+  | Shift  {terminal; _} -> f terminal
+  | Node   {left; right; _} ->
+    iter_terminals_of_derivation ~f left;
+    iter_terminals_of_derivation ~f right
+  | Expand {expansion; _} ->
+    iter_terminals_of_derivation ~f expansion
+
+let generate_sentence ?(length=100) ?from () =
   let tr = match from with
     | None -> IndexSet.choose (Transition.accepting grammar)
     | Some tr -> tr
@@ -374,7 +423,8 @@ let generate_sentence ?(length=100) ?from f =
   assert (Array.length (Reach.Classes.post_transition tr) = 1);
   let node = Reach.Tree.leaf tr in
   let cell = Reach.Cell.encode node ~pre:0 ~post:0 in
-  fuzz length cell ~f
+  let _, derivation = fuzz length cell in
+  derivation
 
 let output_with_comments oc =
   let count = ref 0 in
@@ -392,11 +442,12 @@ let directly_output oc =
 
 let () =
   for _ = 0 to !opt_count - 1 do
-    let _ : int =
-      generate_sentence ~length:!opt_length
-        (if !opt_comments
-         then output_with_comments stdout
-         else directly_output stdout)
+    let derivation = generate_sentence ~length:!opt_length () in
+    let output =
+      if !opt_comments
+      then output_with_comments stdout
+      else directly_output stdout
     in
+    iter_terminals_of_derivation derivation ~f:output;
     output_char stdout '\n'
   done
