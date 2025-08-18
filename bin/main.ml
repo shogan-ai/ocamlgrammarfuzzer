@@ -162,6 +162,8 @@ let reachability = Reachability.make grammar ~avoid:(fun prod -> weights.:(prod)
 
 module Reach = (val reachability)
 
+let () = stopwatch 1 "reachability (%d cells)" (cardinal Reach.Cell.n)
+
 (* Naive fuzzing *)
 
 let sample_list l =
@@ -360,23 +362,7 @@ let () =
 
 (* Check we know how to print each terminal *)
 
-let terminals =
-  let unknown = ref [] in
-  let table =
-    Vector.init (Terminal.cardinal grammar) @@
-    fun t ->
-    let name = Terminal.to_string grammar t in
-    match Token_printer.print_token name with
-    | txt -> txt
-    | exception Not_found ->
-      push unknown name; name
-  in
-  match !unknown with
-  | [] -> table
-  | xs ->
-    prerr_endline "Unknown terminals:";
-    List.iter prerr_endline xs;
-    exit 1
+let terminal_text = Token_printer.for_grammar grammar []
 
 let generate_sentence ?(length=100) ?from f =
   let tr = match from with
@@ -394,7 +380,7 @@ let output_with_comments oc =
   let count = ref 0 in
   fun t ->
     if !count > 0 then output_char oc ' ';
-    Printf.fprintf oc "(* C%d *) %s" !count terminals.:(t);
+    Printf.fprintf oc "(* C%d *) %s" !count terminal_text.:(t);
     incr count
 
 let directly_output oc =
@@ -402,10 +388,7 @@ let directly_output oc =
   fun t ->
     if !need_sep then output_char oc ' ';
     need_sep := true;
-    output_string oc terminals.:(t)
-
-let () =
-  Printf.eprintf "%d cells\n" (cardinal Reach.Cell.n)
+    output_string oc terminal_text.:(t)
 
 let () =
   for _ = 0 to !opt_count - 1 do

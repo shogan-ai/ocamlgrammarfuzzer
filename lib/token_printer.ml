@@ -1,4 +1,9 @@
-let print_token = function
+open Fix.Indexing
+open Utils
+open Misc
+open Info
+
+let builtin = function
   | "AMPERAMPER"             -> "&&"
   | "AMPERSAND"              -> "&"
   | "AND"                    -> "and"
@@ -149,3 +154,35 @@ let print_token = function
   | "HASHLBRACE"    -> "#{"
   | "error" | "#" as x       -> x ^ "(*FIXME: Should not happen)"
   | _ -> raise Not_found
+
+let for_grammar (grammar : _ Info.grammar) custom =
+  let (module G) = Info.raw grammar in
+  let unknown = ref [] in
+  let table =
+    Vector.init (Terminal.cardinal grammar) @@
+    fun t ->
+    let name = Terminal.to_string grammar t in
+    let attributes = G.Terminal.attributes (G.Terminal.of_int (Index.to_int t)) in
+    match List.assoc_opt name custom with
+    | Some txt -> txt
+    | None ->
+      match
+        List.find_map (fun attr ->
+            if G.Attribute.label attr = "name"
+            then Some (G.Attribute.payload attr)
+            else None
+          ) attributes
+      with
+      | Some text -> text
+      | None ->
+        match builtin name with
+        | txt -> txt
+        | exception Not_found ->
+          push unknown name; name
+  in
+  match !unknown with
+  | [] -> table
+  | xs ->
+    prerr_endline "Unknown terminals:";
+    List.iter prerr_endline xs;
+    exit 1
