@@ -2,23 +2,32 @@
 open Fix.Indexing
 open Utils
 open Misc
+open Grammarfuzzer
 
 let opt_count = ref 1
 let opt_length = ref 100
 let opt_comments = ref false
 let opt_seed = ref (-1)
 let opt_jane = ref false
+let opt_entrypoints = ref []
+let opt_weights = ref []
+let opt_avoid = ref []
+let opt_focus = ref []
 
 let spec_list = [
-  ("-n"         , Arg.Set_int opt_count, "<int> Number of lines to generate"  );
+  (* ("-n"         , Arg.Set_int opt_count, "<int> Number of lines to generate"  ); *)
   ("--count"    , Arg.Set_int opt_count, "<int> Number of lines to generate"  );
-  ("-c"         , Arg.Set opt_comments , " Generate fake comments in the lines");
+  (* ("-c"         , Arg.Set opt_comments , " Generate fake comments in the lines"); *)
   ("--comments" , Arg.Set opt_comments , " Generate fake comments in the lines");
-  ("-l"         , Arg.Set_int opt_length, "<int> Number of token per sentence");
+  (* ("-l"         , Arg.Set_int opt_length, "<int> Number of token per sentence"); *)
   ("--length"   , Arg.Set_int opt_length, "<int> Number of token per sentence");
   ("--seed"     , Arg.Set_int opt_seed, "<int> Random seed");
   ("--jane"     , Arg.Set opt_jane, " Use Jane Street dialect of OCaml");
   ("-v"         , Arg.Unit (fun () -> incr Stopwatch.verbosity), " Increase verbosity");
+  ("--entrypoint", Arg.String (push opt_entrypoints), " Generate sentences from this entrypoint");
+  ("--weight", Arg.String (push opt_weights), " Adjust the weights of grammatical constructions");
+  ("--avoid", Arg.String (push opt_avoid), " Forbid grammatical constructions");
+  ("--focus", Arg.String (push opt_focus), " Generate sentences stressing a grammatical construction");
 ]
 
 let usage_msg = "Usage: ocamlgrammarfuzzer [options]"
@@ -32,27 +41,37 @@ let () = match !opt_seed with
   | -1 -> Random.self_init ()
   |  n -> Random.init n
 
+(* Load and preprocess the grammar *)
+
 module Grammar = MenhirSdk.Cmly_read.FromString(struct
     let content =
-      if !opt_jane then
-        Ocaml_jane_grammar.content
-      else
-        Ocaml_grammar.content
+      if !opt_jane
+      then Ocaml_jane_grammar.content
+      else Ocaml_grammar.content
   end)
 
-open Grammarfuzzer
-
 include Info.Lift(Grammar)
-
-let reachability = Reachability.make grammar
-module Reach = (val reachability)
-
 open Info
 
-let () = Random.self_init ()
+(* Parse weight specifications *)
+
+let weights = Vector.make (Production.cardinal grammar) 1.0
+
+(* Compute reachability, considering only productions with strictly positive
+   weights. *)
+let reachability = Reachability.make grammar ~avoid:(fun prod -> weights.:(prod) <= 0.0)
+
+module Reach = (val reachability)
+
+(* Naive fuzzing *)
 
 let sample_list l =
-  List.nth l (Random.int (List.length l))
+  let total = List.fold_left (fun sum (_, w) -> sum +. w) 0.0 l in
+  let sample = ref (Random.float total) in
+  fst (List.find (fun (_, w) ->
+      sample := !sample -. w;
+      !sample <= 0.0
+    ) l)
 
 let iter_sub_nodes ~f i_pre i_post l r =
   let coercion =
@@ -103,9 +122,13 @@ let iter_eqns ~f i_pre i_post goto =
         with
         | exception Not_found -> ()
         | i_pre', i_post' ->
-          f (Reach.Cell.encode node' ~pre:i_pre' ~post:i_post')
+          f reduction (Reach.Cell.encode node' ~pre:i_pre' ~post:i_post')
   end eqns.non_nullable
 
+(* [fuzz size0 cell ~f] generates a sentence in the langauge recognized by
+   [cell] that tries to have size [size0].
+   The callback [f] is called for each terminal of the sentence, in order,
+   and [fuzz] returns the number of terminals actually generated. *)
 let rec fuzz size0 cell ~f =
   let current_cost = Reach.Analysis.cost cell in
   let size = Int.max size0 current_cost in
@@ -118,7 +141,7 @@ let rec fuzz size0 cell ~f =
         fun cr ->
           let r_cost = Reach.Analysis.cost cr in
           if r_cost < max_int && l_cost + r_cost <= size then
-            push candidates (cl, cr)
+            push candidates ((cl, cr), 1.0)
       );
     let (cl, cr) = sample_list !candidates in
     let sl = Reach.Analysis.cost cl in
@@ -132,13 +155,21 @@ let rec fuzz size0 cell ~f =
       else
         (Random.int (size + 1) + Random.int (size + 1)) / 2
     in
-    fuzz (sl + mid) cl ~f;
-    fuzz (sr + (size - mid)) cr ~f
+    let left_length = fuzz (sl + mid) cl ~f in
+    (* Bias right side:
+       - first set an expectation on the position of the split
+         between left and right side,
+       - generate left side targetting the split position
+       - compensate on right side if left side missed expectation
+    *)
+    let right_length = fuzz (size - left_length) cr ~f in
+    left_length + right_length
   | L tr ->
     match Transition.split grammar tr with
     | R shift ->
       (* It is a shift transition, just shift the symbol *)
-      f (Transition.shift_symbol grammar shift)
+      f (Transition.shift_symbol grammar shift);
+      1
     | L goto ->
       (* It is a goto transition *)
       let eqns = Reach.Tree.goto_equations goto in
@@ -150,24 +181,47 @@ let rec fuzz size0 cell ~f =
         IndexSet.quick_subset c_post eqns.nullable_lookaheads &&
         not (IndexSet.disjoint c_pre c_post)
       in
-      if size > 0 || not nullable then
-        let candidates = ref [] in
-        iter_eqns i_pre i_post goto ~f:(fun cell ->
+      if size <= 0 && nullable then
+        0
+      else
+        let candidates = ref (
+            (* Compute weight of nullable case *)
+            let weight =
+              List.fold_left (fun acc reduction ->
+                  if IndexSet.quick_subset c_post reduction.Reach.lookahead
+                  then acc +. weights.:(reduction.production)
+                  else acc
+                ) 0.0 eqns.nullable
+            in
+            if weight > 0.0 then
+              (* Weight again by the targeted size: avoid selecting null case
+                 when a lot of tokens are expected *)
+              [None, weight /. float (Int.max 1 size)]
+            else
+              []
+          ) in
+        (* Add recursive candidates *)
+        iter_eqns i_pre i_post goto ~f:(fun reduction cell ->
             if Reach.Analysis.cost cell <= size then
-              push candidates cell
+              push candidates (Some cell, weights.:(reduction.production))
           );
-        let candidates = !candidates in
-        if not nullable then
-          fuzz size (sample_list candidates) ~f
-        else
-          let length = List.length candidates in
-          let index = Random.int (1 + length * (size + 1)) in
-          if index > 0 then
-            fuzz size (List.nth candidates ((index - 1) / (size + 1))) ~f
+        match sample_list !candidates with
+        | None -> 0
+        | Some cell -> fuzz size cell ~f
 
 let () = Misc.stopwatch 0 "Start BFS"
 
 let bfs = Vector.make Reach.Cell.n ([], [])
+
+let () =
+  IndexSet.iter (fun entrypoint ->
+      begin match Lr1.is_entrypoint grammar entrypoint with
+        | None -> assert false
+        | Some production ->
+          Printf.eprintf "Entrypoint: %s\n"
+          (Nonterminal.to_string grammar (Production.lhs grammar production))
+      end
+    ) (Lr1.entrypoints grammar)
 
 let () =
   let todo = ref [] in
@@ -191,7 +245,10 @@ let () =
       match Transition.split grammar tr with
       | R _ -> ()
       | L gt ->
-        iter_eqns i_pre i_post gt ~f:(visit path)
+        iter_eqns i_pre i_post gt
+          ~f:(fun reduction cell ->
+              if weights.:(reduction.production) > 0.0 then
+                visit path cell)
   in
   IndexSet.iter (fun tr ->
       let node = Reach.Tree.leaf (Transition.of_goto grammar tr) in
@@ -201,163 +258,21 @@ let () =
   fixpoint ~counter ~propagate todo;
   Misc.stopwatch 0 "Stop BFS (depth: %d)" !counter
 
-let unknown = ref []
+(* Check we know how to print each terminal *)
 
-let terminals = Vector.init (Terminal.cardinal grammar) @@
-  fun t -> match Terminal.to_string grammar t with
-  | "AMPERAMPER"             -> "&&"
-  | "AMPERSAND"              -> "&"
-  | "AND"                    -> "and"
-  | "AS"                     -> "as"
-  | "ASSERT"                 -> "assert"
-  | "BACKQUOTE"              -> "`"
-  | "BANG"                   -> "!"
-  | "BAR"                    -> "|"
-  | "BARBAR"                 -> "||"
-  | "BARRBRACKET"            -> "|]"
-  | "BEGIN"                  -> "begin"
-  | "CHAR"                   -> "'a'"
-  | "CLASS"                  -> "class"
-  | "COLON"                  -> ":"
-  | "COLONCOLON"             -> "::"
-  | "COLONEQUAL"             -> ":="
-  | "COLONGREATER"           -> ":>"
-  | "COMMA"                  -> ","
-  | "CONSTRAINT"             -> "constraint"
-  | "DO"                     -> "do"
-  | "DONE"                   -> "done"
-  | "DOT"                    -> "."
-  | "DOTDOT"                 -> ".."
-  | "DOWNTO"                 -> "downto"
-  | "EFFECT"                 -> "effect"
-  | "ELSE"                   -> "else"
-  | "END"                    -> "end"
-  | "EOF"                    -> ""
-  | "EQUAL"                  -> "="
-  | "EXCEPTION"              -> "exception"
-  | "EXTERNAL"               -> "external"
-  | "FALSE"                  -> "false"
-  | "FLOAT"                  -> "42.0"
-  | "FOR"                    -> "for"
-  | "FUN"                    -> "fun"
-  | "FUNCTION"               -> "function"
-  | "FUNCTOR"                -> "functor"
-  | "GREATER"                -> ">"
-  | "GREATERRBRACE"          -> ">}"
-  | "GREATERRBRACKET"        -> ">]"
-  | "IF"                     -> "if"
-  | "IN"                     -> "in"
-  | "INCLUDE"                -> "include"
-  | "INFIXOP0"               -> "!="
-  | "INFIXOP1"               -> "@"
-  | "INFIXOP2"               -> "+!"
-  | "INFIXOP3"               -> "land"
-  | "INFIXOP4"               -> "**"
-  | "DOTOP"                  -> ".+"
-  | "LETOP"                  -> "let*"
-  | "ANDOP"                  -> "and*"
-  | "INHERIT"                -> "inherit"
-  | "INITIALIZER"            -> "initializer"
-  | "INT"                    -> "42"
-  | "LABEL"                  -> "~label:"
-  | "LAZY"                   -> "lazy"
-  | "LBRACE"                 -> "{"
-  | "LBRACELESS"             -> "{<"
-  | "LBRACKET"               -> "["
-  | "LBRACKETBAR"            -> "[|"
-  | "LBRACKETLESS"           -> "[<"
-  | "LBRACKETGREATER"        -> "[>"
-  | "LBRACKETPERCENT"        -> "[%"
-  | "LBRACKETPERCENTPERCENT" -> "[%%"
-  | "LESS"                   -> "<"
-  | "LESSMINUS"              -> "<-"
-  | "LET"                    -> "let"
-  | "LIDENT"                 -> "lident"
-  | "LPAREN"                 -> "("
-  | "LBRACKETAT"             -> "[@"
-  | "LBRACKETATAT"           -> "[@@"
-  | "LBRACKETATATAT"         -> "[@@@"
-  | "MATCH"                  -> "match"
-  | "METHOD"                 -> "method"
-  | "MINUS"                  -> "-"
-  | "MINUSDOT"               -> "-."
-  | "MINUSGREATER"           -> "->"
-  | "MODULE"                 -> "module"
-  | "MUTABLE"                -> "mutable"
-  | "NEW"                    -> "new"
-  | "NONREC"                 -> "nonrec"
-  | "OBJECT"                 -> "object"
-  | "OF"                     -> "of"
-  | "OPEN"                   -> "open"
-  | "OPTLABEL"               -> "?label:"
-  | "OR"                     -> "or"
-  | "PARSER"                 -> "parser"
-  | "PERCENT"                -> "%"
-  | "PLUS"                   -> "+"
-  | "PLUSDOT"                -> "+."
-  | "PLUSEQ"                 -> "+="
-  | "PREFIXOP"               -> "!+"
-  | "PRIVATE"                -> "private"
-  | "QUESTION"               -> "?"
-  | "QUOTE"                  -> "'"
-  | "RBRACE"                 -> "}"
-  | "RBRACKET"               -> "]"
-  | "REC"                    -> "rec"
-  | "RPAREN"                 -> ")"
-  | "SEMI"                   -> ";"
-  | "SEMISEMI"               -> ";;"
-  | "HASH"                   -> "#"
-  | "HASHOP"                 -> "##"
-  | "SIG"                    -> "sig"
-  | "STAR"                   -> "*"
-  | "STRING"                 -> "\"hello\""
-  | "QUOTED_STRING_EXPR"     -> "{%hello|world|}"
-  | "QUOTED_STRING_ITEM"     -> "{%%hello|world|}"
-  | "STRUCT"                 -> "struct"
-  | "THEN"                   -> "then"
-  | "TILDE"                  -> "~"
-  | "TO"                     -> "to"
-  | "TRUE"                   -> "true"
-  | "TRY"                    -> "try"
-  | "TYPE"                   -> "type"
-  | "UIDENT"                 -> "UIdent"
-  | "UNDERSCORE"             -> "_"
-  | "VAL"                    -> "val"
-  | "VIRTUAL"                -> "virtual"
-  | "WHEN"                   -> "when"
-  | "WHILE"                  -> "while"
-  | "WITH"                   -> "with"
-  | "COMMENT"                -> "(*comment*)"
-  | "DOCSTRING"              -> "(**documentation*)"
-  | "EOL"                    -> "\n"
-  | "METAOCAML_ESCAPE"       -> ".~"
-  | "METAOCAML_BRACKET_OPEN" -> ".<"
-  | "METAOCAML_BRACKET_CLOSE" -> ">."
-  | "error" | "#" as x       -> x ^ "(*FIXME: Should not happen)"
-  | "MOD"           -> "mod"
-  | "EXCLAVE"       -> "exclave_"
-  | "GLOBAL"        -> "global_"
-  | "KIND_ABBREV"   -> "kind_abbrev_"
-  | "KIND_OF"       -> "kind_of_"
-  | "LOCAL"         -> "local_"
-  | "ONCE"          -> "once_"
-  | "OVERWRITE"     -> "overwrite_"
-  | "STACK"         -> "stack_"
-  | "UNIQUE"        -> "unique_"
-  | "LBRACKETCOLON" -> "[:"
-  | "HASH_SUFFIX"   -> "#"
-  | "HASH_INT"      -> "#1"
-  | "HASH_FLOAT"    -> "#1.0"
-  | "HASHLPAREN"    -> "#("
-  | "AT"            -> "@"
-  | "ATAT"          -> "@@"
-  | "COLONRBRACKET" -> ":]"
-  | "DOTHASH"       -> ".#"
-  | "HASHLBRACE"    -> "#{"
-  | x -> push unknown x; x
-
-let () = match !unknown with
-  | [] -> ()
+let terminals =
+  let unknown = ref [] in
+  let table =
+    Vector.init (Terminal.cardinal grammar) @@
+    fun t ->
+    let name = Terminal.to_string grammar t in
+    match Token_printer.print_token name with
+    | txt -> txt
+    | exception Not_found ->
+      push unknown name; name
+  in
+  match !unknown with
+  | [] -> table
   | xs ->
     prerr_endline "Unknown terminals:";
     List.iter prerr_endline xs;
@@ -394,9 +309,11 @@ let () =
 
 let () =
   for _ = 0 to !opt_count - 1 do
-    generate_sentence ~length:!opt_length
-      (if !opt_comments
-       then output_with_comments stdout
-       else directly_output stdout);
+    let _ : int =
+      generate_sentence ~length:!opt_length
+        (if !opt_comments
+         then output_with_comments stdout
+         else directly_output stdout)
+    in
     output_char stdout '\n'
   done

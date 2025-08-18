@@ -156,7 +156,7 @@ end
 
 type 'g t = (module S with type g = 'g)
 
-let make (type g) (g : g grammar) : g t = (module struct
+let make (type g) ?(avoid=fun _ -> false) (g : g grammar) : g t = (module struct
   type nonrec g = g
 
   (* ---------------------------------------------------------------------- *)
@@ -199,7 +199,7 @@ let make (type g) (g : g grammar) : g t = (module struct
     (* [add_reduction lr1 (production, lookahead)] populates [table] by
        simulating the reduction [production], starting from [lr1] when
        lookahead is in [lookahead] *)
-    let add_reduction lr1 (production, lookahead) =
+    let add_reduction lr1 production lookahead =
       if Production.kind g production = `REGULAR then begin
         let lhs = Production.lhs g production in
         let rhs = Production.rhs g production in
@@ -219,21 +219,26 @@ let make (type g) (g : g grammar) : g t = (module struct
           ) states
       end
     in
-    (* [get_reductions lr1] returns the list of productions and the lookahead
-       sets that allow reducing them from state [lr1] *)
-    let get_reductions lr1 =
+    (* [iter_reductions lr1 ~f] calls [f prod lookaheads] for each production
+       [prod] that can be reduced them from state [lr1] with the set of
+       lookaheads that permit this reduction. *)
+    let iter_reductions lr1 ~f =
       match Lr1.default_reduction g lr1 with
       | Some prod ->
         (* State has a default reduction, the lookahead can be any terminal *)
-        [prod, Terminal.all g]
+        if not (avoid prod) then
+          f prod (Terminal.all g)
       | None ->
-        IndexSet.fold
-          (fun red acc -> (Reduction.production g red, Reduction.lookaheads g red) :: acc)
-          (Reduction.from_lr1 g lr1) []
+        IndexSet.iter
+          (fun red ->
+             let prod = Reduction.production g red in
+             if not (avoid prod) then
+               f prod (Reduction.lookaheads g red))
+          (Reduction.from_lr1 g lr1)
     in
     (* Populate [table] with the reductions of all state *)
     Index.iter (Lr1.cardinal g)
-      (fun lr1 -> List.iter (add_reduction lr1) (get_reductions lr1));
+      (fun lr1 -> iter_reductions lr1 ~f:(add_reduction lr1));
     Vector.get table
 
   (* ---------------------------------------------------------------------- *)
