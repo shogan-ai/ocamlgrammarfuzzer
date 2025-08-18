@@ -1,4 +1,4 @@
 (executable
  (public_name grammarfuzzer)
  (name main)
- (libraries grammarfuzzer menhirSdk ocaml_parser ocaml_grammar ocaml_jane_grammar))
+ (libraries grammarfuzzer menhirSdk front ocaml_parser ocaml_grammar ocaml_jane_grammar))
