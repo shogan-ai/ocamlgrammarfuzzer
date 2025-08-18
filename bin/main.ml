@@ -23,7 +23,7 @@ let spec_list = [
   ("--length"   , Arg.Set_int opt_length, "<int> Number of token per sentence");
   ("--seed"     , Arg.Set_int opt_seed, "<int> Random seed");
   ("--jane"     , Arg.Set opt_jane, " Use Jane Street dialect of OCaml");
-  ("-v"         , Arg.Unit (fun () -> incr Stopwatch.verbosity), " Increase verbosity");
+  ("-v"         , Arg.Unit (fun () -> incr Misc.verbosity_level), " Increase verbosity");
   ("--entrypoint", Arg.String (push opt_entrypoints), " Generate sentences from this entrypoint");
   ("--weight", Arg.String (push opt_weights), " Adjust the weights of grammatical constructions");
   ("--avoid", Arg.String (push opt_avoid), " Forbid grammatical constructions");
@@ -209,7 +209,7 @@ let rec fuzz size0 cell ~f =
         | None -> 0
         | Some cell -> fuzz size cell ~f
 
-let () = Misc.stopwatch 0 "Start BFS"
+let () = Misc.stopwatch 1 "Start BFS"
 
 let bfs = Vector.make Reach.Cell.n ([], [])
 
@@ -256,7 +256,7 @@ let () =
     ) (Transition.accepting grammar);
   let counter = ref 0 in
   fixpoint ~counter ~propagate todo;
-  Misc.stopwatch 0 "Stop BFS (depth: %d)" !counter
+  Misc.stopwatch 1 "Stop BFS (depth: %d)" !counter
 
 (* Check we know how to print each terminal *)
 
