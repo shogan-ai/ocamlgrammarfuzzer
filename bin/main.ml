@@ -214,14 +214,15 @@ let () = Misc.stopwatch 1 "Start BFS"
 let bfs = Vector.make Reach.Cell.n ([], [])
 
 let () =
-  IndexSet.iter (fun entrypoint ->
-      begin match Lr1.is_entrypoint grammar entrypoint with
-        | None -> assert false
-        | Some production ->
-          Printf.eprintf "Entrypoint: %s\n"
-          (Nonterminal.to_string grammar (Production.lhs grammar production))
-      end
-    ) (Lr1.entrypoints grammar)
+  if false then
+    IndexSet.iter (fun entrypoint ->
+        begin match Lr1.is_entrypoint grammar entrypoint with
+          | None -> assert false
+          | Some production ->
+            Printf.eprintf "Entrypoint: %s\n"
+              (Nonterminal.to_string grammar (Production.lhs grammar production))
+        end
+      ) (Lr1.entrypoints grammar)
 
 let () =
   let todo = ref [] in
