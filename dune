@@ -1,0 +1,2 @@
+(dirs ("bin" "lib" "test"))
+(vendored_dirs vendor)
