@@ -53,12 +53,111 @@ module Grammar = MenhirSdk.Cmly_read.FromString(struct
 include Info.Lift(Grammar)
 open Info
 
+let point_error_position (pat : string) pos =
+  let lines = String.split_on_char '\n' pat in
+  let rec loop i = function
+    | x :: xs when i < pos.Lexing.pos_lnum ->
+      x :: loop (i + 1) xs
+    | otherwise ->
+      (String.make (pos.pos_cnum - pos.pos_bol) ' ' ^ "^") ::
+      otherwise
+  in
+  loop 0 lines
+
+let pattern_pos =
+  {Lexing.pos_fname = "<pattern>"; pos_lnum = 1;
+   pos_cnum = 0; pos_bol = 0}
+
+let prepare_lexer pattern =
+  let st = Front.Lexer.fresh_state () in
+  let lb = Front.Lexer.prepare_lexbuf st (Lexing.from_string pattern) in
+  Lexing.set_filename lb "<pattern>";
+  (st, lb)
+
+let parse_string_with pattern f =
+  let st, lb = prepare_lexer pattern in
+  match f (Front.Lexer.main st) lb with
+  | result -> result
+  | exception exn ->
+    let msg, pos = match exn with
+      | Front.Lexer.Error {msg; pos} -> (msg, pos)
+      | Front.Parser.Error -> "syntax error", lb.Lexing.lex_start_p
+      | _ -> raise exn
+    in
+    let lines = point_error_position pattern pos in
+    Syntax.error pos "%s.\n  %s" msg (String.concat "\n  " lines)
+
+let raise_error pos fmt =
+  Printf.ksprintf (fun msg -> raise (Front.Lexer.Error {msg; pos})) fmt
+
+let parse_pattern pattern =
+  parse_string_with pattern Front.Parser.parse_filter
+
+let parse_weight pattern =
+  parse_string_with pattern (fun lexer lexbuf ->
+      match lexer lexbuf with
+      | Front.Parser.NUMBER weight ->
+        let weight = float_of_string weight in
+        let pattern = Front.Parser.parse_filter lexer lexbuf in
+        (weight, pattern)
+      | _ -> raise_error lexbuf.lex_start_p
+               "expecting a weight value (a number)"
+    )
+
 (* Parse weight specifications *)
 
 let weights = Vector.make (Production.cardinal grammar) 1.0
 
+let symbol_index = Transl.Indices.make grammar
+
+let transl_filter filter =
+  match filter with
+  | {Syntax. lhs = None; rhs = [Syntax.Find (Some symbol), pos]} ->
+    (* Special-case: look for all occurrences of a single symbol *)
+    begin match Transl.Indices.find_symbol symbol_index symbol with
+      | None ->
+        raise_error pos "%s is not a valid symbol"
+          (Transl.Indices.string_of_symbol symbol)
+      | Some sym -> Either.Left sym
+    end
+  | _ ->
+    Either.Right
+      (Transl.transl_filter_to_prods
+        grammar symbol_index pattern_pos filter)
+
+let process_weight (weight, filter) =
+  let update_prod prod = weights.@(prod) <- ( *. ) weight in
+  match transl_filter filter with
+  | Either.Left sym ->
+    Index.iter (Production.cardinal grammar) (fun prod ->
+        let rhs = Production.rhs grammar prod in
+        if Array.exists (Index.equal sym) rhs then
+          update_prod prod
+      )
+  | Either.Right prods ->
+    List.iter (fun (prod, _) -> update_prod prod) prods
+
+let () =
+  List.iter (fun spec -> process_weight (parse_weight spec))
+    (List.rev !opt_weights);
+  List.iter (fun spec -> process_weight (0.0, parse_pattern spec))
+    (List.rev !opt_avoid)
+
+let process_focus filter =
+  match transl_filter filter with
+  | Either.Left _sym ->
+    failwith "TODO"
+  | Either.Right _prods ->
+    failwith "TODO"
+
+let _focus =
+  List.map
+    (fun spec -> process_focus (parse_pattern spec))
+    (List.rev !opt_focus)
+
 (* Compute reachability, considering only productions with strictly positive
    weights. *)
+
 let reachability = Reachability.make grammar ~avoid:(fun prod -> weights.:(prod) <= 0.0)
 
 module Reach = (val reachability)
