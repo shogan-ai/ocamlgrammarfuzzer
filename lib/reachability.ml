@@ -135,9 +135,13 @@ module type S = sig
 
     (* Get the cell corresponding to a node, a row, and a column *)
     val encode : Tree.n index -> pre:row -> post:column -> n index
+    val iter_node : Tree.n index -> (n index -> unit) -> unit
 
     (* Get the node, row, and column corresponding to a cell *)
     val decode : n index -> Tree.n index * row * column
+
+    (* Index of the first cell of matrix associated to a node *)
+    val first_cell : Tree.n index -> n index
 
     type goto
     val goto : goto cardinal
@@ -742,6 +746,7 @@ let make (type g) ?(avoid=fun _ -> false) (g : g grammar) : g t = (module struct
 
     (* Get the cell corresponding to a node, a row, and a column *)
     val encode : Tree.n index -> pre:row -> post:column -> n index
+    val iter_node : Tree.n index -> (n index -> unit) -> unit
 
     (* Get the node, row, and column corresponding to a cell *)
     val decode : n index -> Tree.n index * row * column
@@ -811,6 +816,14 @@ let make (type g) ?(avoid=fun _ -> false) (g : g grammar) : g t = (module struct
       let post_count = Tree.post_count i in
       fun ~pre ~post ->
         Index.of_int n (first + pre * post_count + post)
+
+    let iter_node i f =
+      let first = first_cell.:(i) in
+      let pre_count = Tree.pre_count i in
+      let post_count = Tree.post_count i in
+      for j = 0 to pre_count * post_count - 1 do
+        f (Index.of_int n (first + j))
+      done
 
     let first_goto_node, first_goto_cell, last_goto_cell =
       match cardinal (Transition.goto g) with

@@ -143,18 +143,6 @@ let () =
   List.iter (fun spec -> process_weight (0.0, parse_pattern spec))
     (List.rev !opt_avoid)
 
-let process_focus filter =
-  match transl_filter filter with
-  | Either.Left _sym ->
-    failwith "TODO"
-  | Either.Right _prods ->
-    failwith "TODO"
-
-let _focus =
-  List.map
-    (fun spec -> process_focus (parse_pattern spec))
-    (List.rev !opt_focus)
-
 (* Compute reachability, considering only productions with strictly positive
    weights. *)
 
@@ -166,7 +154,9 @@ let () = stopwatch 1 "reachability (%d cells)" (cardinal Reach.Cell.n)
 
 (* Naive fuzzing *)
 
-let sample_list l =
+let sample_list = function
+  | [] -> failwith "empty list"
+  | l ->
   let total = List.fold_left (fun sum (_, w) -> sum +. w) 0.0 l in
   let sample = ref (Random.float total) in
   fst (List.find (fun (_, w) ->
@@ -249,6 +239,11 @@ let derivation_cell ( Null {cell} | Shift {cell; _}
                     | Node {cell; _} | Expand {cell; _}) =
   cell
 
+let derivation_iter_sub f = function
+  | Null _ | Shift _ -> ()
+  | Node {left; right; _} -> f left; f right
+  | Expand {expansion; _} -> f expansion
+
 let _ = ignore derivation_cell
 
 (* [fuzz target_length cell] generates a derivation of [cell] aiming to have
@@ -258,6 +253,7 @@ let _ = ignore derivation_cell
 *)
 let rec fuzz size0 cell =
   let current_cost = Reach.Analysis.cost cell in
+  assert (current_cost < max_int);
   let size = Int.max size0 current_cost in
   let node, i_pre, i_post = Reach.Cell.decode cell in
   match Reach.Tree.split node with
@@ -265,11 +261,22 @@ let rec fuzz size0 cell =
     let candidates = ref [] in
     iter_sub_nodes i_pre i_post l r ~f:(fun cl ->
         let l_cost = Reach.Analysis.cost cl in
-        fun cr ->
-          let r_cost = Reach.Analysis.cost cr in
-          if r_cost < max_int && l_cost + r_cost <= size then
-            push candidates ((cl, cr), 1.0)
+        if l_cost = max_int then
+          fun _ -> ()
+        else
+          fun cr ->
+            let r_cost = Reach.Analysis.cost cr in
+            if r_cost < max_int && l_cost + r_cost <= size then
+              push candidates ((cl, cr), 1.0)
       );
+    if List.is_empty !candidates then
+      iter_sub_nodes i_pre i_post l r ~f:(fun cl ->
+          let l_cost = Reach.Analysis.cost cl in
+          fun cr ->
+            let r_cost = Reach.Analysis.cost cr in
+            if l_cost < max_int && r_cost < max_int then
+              push candidates ((cl, cr), 1.0)
+        );
     let (cl, cr) = sample_list !candidates in
     let sl = Reach.Analysis.cost cl in
     let sr = Reach.Analysis.cost cr in
@@ -394,12 +401,14 @@ let bfs = Vector.make Reach.Cell.n ([], [])
 
 let () =
   let todo = ref [] in
+  let reachable cell = Reach.Analysis.cost cell < max_int in
   let visit parent cell =
-    match bfs.:(cell) with
-    | (_::_, _) | (_, _::_ ) -> ()
-    | ([], []) ->
-      bfs.:(cell) <- parent;
-      push todo cell
+    if reachable cell then
+      match bfs.:(cell) with
+      | (_::_, _) | (_, _::_ ) -> ()
+      | ([], []) ->
+        bfs.:(cell) <- parent;
+        push todo cell
   in
   let propagate cell =
     let prefix, suffix as path = bfs.:(cell) in
@@ -407,8 +416,10 @@ let () =
     match Reach.Tree.split node with
     | R (l, r) ->
       iter_sub_nodes ~f:(fun cl cr ->
-          visit (prefix, cr :: suffix) cl;
-          visit (cl :: prefix, suffix) cr;
+          if reachable cl && reachable cr then (
+            visit (prefix, cr :: suffix) cl;
+            visit (cl :: prefix, suffix) cr;
+          )
         ) i_pre i_post l r
     | L tr ->
       match Transition.split grammar tr with
@@ -439,8 +450,6 @@ let terminals_of_derivation der =
     | Expand {expansion; _} -> loop acc expansion
   in
   loop [] der
-
-let _ = terminals_of_derivation
 
 let rec iter_terminals_of_derivation ~f = function
   | Null _ -> ()
@@ -479,21 +488,98 @@ let directly_output oc =
     output_string oc terminal_text.:(t)
 
 let () =
+  let output_terminal () =
+    if !opt_comments
+    then output_with_comments stdout
+    else directly_output stdout
+  in
   let entrypoints =
     IndexSet.elements entrypoints
     |> List.map (fun tr -> tr, 1.0)
   in
-  for _ = 0 to !opt_count - 1 do
-    let derivation =
-      generate_sentence
-        ~from:(sample_list entrypoints)
-        ~length:!opt_length ()
+  match List.rev !opt_focus with
+  | [] ->
+    for _ = 0 to !opt_count - 1 do
+      let derivation =
+        generate_sentence
+          ~from:(sample_list entrypoints)
+          ~length:!opt_length ()
+      in
+      iter_terminals_of_derivation derivation ~f:(output_terminal ());
+      output_char stdout '\n'
+    done
+  | focus ->
+    let focused_sym = Boolvector.make (Symbol.cardinal grammar) false in
+    let focused_prods = Boolvector.make (Production.cardinal grammar) false in
+    let focused_items = Vector.make (Production.cardinal grammar) IntSet.empty in
+    let process_focus filter =
+      match transl_filter filter with
+      | Either.Left sym ->
+        Boolvector.set focused_sym sym
+      | Either.Right prods ->
+        List.iter (fun (prod, dots) ->
+            if IntSet.is_empty dots
+            then Boolvector.set focused_prods prod
+            else focused_items.@(prod) <- IntSet.union dots
+          ) prods
     in
-    let output =
-      if !opt_comments
-      then output_with_comments stdout
-      else directly_output stdout
+    List.iter (fun spec -> process_focus (parse_pattern spec)) focus;
+    let todo = Boolvector.make Reach.Cell.n false in
+    let set_node node = Reach.Cell.iter_node node (Boolvector.set todo) in
+    Index.iter (Transition.any grammar) (fun tr ->
+        if Boolvector.test focused_sym (Transition.symbol grammar tr) then
+          set_node (Reach.Tree.leaf tr)
+      );
+    let rec visit_items i node f =
+      f node i;
+      let i =
+        match Reach.Tree.split node with
+        | L _ -> i + 1
+        | R (l, r) ->
+          let i = visit_items i l f in
+          let i = visit_items i r f in
+          i
+      in
+      f node i;
+      i
     in
-    iter_terminals_of_derivation derivation ~f:output;
-    output_char stdout '\n'
-  done
+    Index.iter (Transition.goto grammar) (fun gt ->
+        let eqns = Reach.Tree.goto_equations gt in
+        if List.exists
+            (fun {Reach.production; _} -> Boolvector.test focused_prods production)
+            eqns.nullable then
+          set_node (Reach.Tree.leaf (Transition.of_goto grammar gt));
+        List.iter begin fun (red, node) ->
+          if Boolvector.test focused_prods red.Reach.production then
+            set_node node;
+          let dots = focused_items.:(red.Reach.production) in
+          if not (IntSet.is_empty dots) then
+            ignore (visit_items 0 node (fun node i ->
+                if IntSet.mem i dots then
+                  set_node node
+              ) : int)
+        end eqns.non_nullable;
+      );
+    Index.iter Reach.Cell.n (fun cell ->
+        if Reach.Analysis.cost cell < max_int && Boolvector.test todo cell then (
+          match bfs.:(cell) with
+          | [], [] -> () (* Unreachable *)
+          | prefix, suffix ->
+            let rec mark_derivation der =
+              Boolvector.clear todo (derivation_cell der);
+              derivation_iter_sub mark_derivation der
+            in
+            let gen_cell length cell =
+              let length = Int.max length (Reach.Analysis.cost cell) in
+              let _, der = fuzz length cell in
+              mark_derivation der;
+              terminals_of_derivation der
+            in
+            let prefix = List.concat_map (gen_cell 0) prefix in
+            let suffix = List.concat_map (gen_cell 0) suffix in
+            let length = !opt_length - List.length prefix - List.length suffix in
+            let terminals = prefix @ gen_cell length cell @ suffix in
+            List.iter (output_terminal ()) terminals;
+            output_char stdout '\n'
+        )
+      )
