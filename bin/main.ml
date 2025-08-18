@@ -8,7 +8,7 @@ let opt_count = ref 1
 let opt_length = ref 100
 let opt_comments = ref false
 let opt_seed = ref (-1)
-let opt_jane = ref false
+let opt_oxcaml = ref false
 let opt_entrypoints = ref []
 let opt_weights = ref []
 let opt_avoid = ref []
@@ -22,7 +22,7 @@ let spec_list = [
   (* ("-l"         , Arg.Set_int opt_length, "<int> Number of token per sentence"); *)
   ("--length"   , Arg.Set_int opt_length, "<int> Number of token per sentence");
   ("--seed"     , Arg.Set_int opt_seed, "<int> Random seed");
-  ("--jane"     , Arg.Set opt_jane, " Use Jane Street dialect of OCaml");
+  ("--oxcaml"   , Arg.Set opt_oxcaml, " Work with Oxcaml dialect");
   ("-v"         , Arg.Unit (fun () -> incr Misc.verbosity_level), " Increase verbosity");
   ("--entrypoint", Arg.String (push opt_entrypoints), " Generate sentences from this entrypoint");
   ("--weight", Arg.String (push opt_weights), " Adjust the weights of grammatical constructions");
@@ -45,7 +45,7 @@ let () = match !opt_seed with
 
 module Grammar = MenhirSdk.Cmly_read.FromString(struct
     let content =
-      if !opt_jane
+      if !opt_oxcaml
       then Ocaml_jane_grammar.content
       else Ocaml_grammar.content
   end)

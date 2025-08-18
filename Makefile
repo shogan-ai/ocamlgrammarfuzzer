@@ -1,6 +1,6 @@
 all:
 	dune build
-	dune exec bin/main.exe -- --jane
+	dune exec bin/main.exe -- --oxcaml
 
 clean:
 	dune clean
