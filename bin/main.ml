@@ -384,7 +384,7 @@ let entrypoints =
       in
       Syntax.error Lexing.dummy_pos
         "unknown entrypoint%s %s.\n\
-         Valid entrypoints are:\n  "
+         valid entrypoints are:\n  %s."
         (if List.compare_length_with keys 1 > 0 then "s" else "")
         (String.concat ", " entrypoints)
         (string_concat_map ", " snd candidates)
@@ -479,8 +479,16 @@ let directly_output oc =
     output_string oc terminal_text.:(t)
 
 let () =
+  let entrypoints =
+    IndexSet.elements entrypoints
+    |> List.map (fun tr -> tr, 1.0)
+  in
   for _ = 0 to !opt_count - 1 do
-    let derivation = generate_sentence ~length:!opt_length () in
+    let derivation =
+      generate_sentence
+        ~from:(sample_list entrypoints)
+        ~length:!opt_length ()
+    in
     let output =
       if !opt_comments
       then output_with_comments stdout
