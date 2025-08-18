@@ -471,3 +471,58 @@ let rewrite_keywords f (pos : Lexing.position) str =
     | _ -> incr i
   done;
   Bytes.to_string b
+
+module Levenshtein = struct
+  type cache = {
+    mutable prev: int array;
+    mutable curr: int array;
+  }
+
+  let make_cache () = {
+    prev = [||];
+    curr = [||];
+  }
+
+  let distance c (s1 : string) (s2 : string) : int =
+    let l1 = String.length s1 in
+    let l2 = String.length s2 in
+
+    (* Ensure s1 is the shorter string for better space usage *)
+    let (l1, s1, l2, s2) =
+      if l1 < l2 then (l1, s1, l2, s2)
+      else (l2, s2, l1, s1)
+    in
+
+    (* Ensure temp rows of size at least (l1 + 1) *)
+    if Array.length c.prev < (l1 + 1) then (
+      c.prev <- Array.make (l1 + 1) 0;
+      c.curr <- Array.make (l1 + 1) 0;
+    );
+
+    (* Initialize first row (prev) *)
+    for i = 0 to l1 do
+      c.prev.(i) <- i
+    done;
+
+    (* Fill the table row by row *)
+    for j = 1 to l2 do
+      let {prev; curr} = c in
+      curr.(0) <- j;  (* insertion cost *)
+
+      for i = 1 to l1 do
+        let cost = if s1.[i-1] = s2.[j-1] then 0 else 1 in
+        curr.(i) <- Int.min
+            (prev.(i) + 1)           (* deletion *)
+            (Int.min
+               (curr.(i-1) + 1)      (* insertion *)
+               (prev.(i-1) + cost)   (* substitution *)
+            )
+      done;
+
+      (* Swap: curr becomes prev for next iteration *)
+      c.prev <- curr;
+      c.curr <- prev;
+    done;
+
+    c.prev.(l1)
+end

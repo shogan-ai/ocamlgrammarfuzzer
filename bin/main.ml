@@ -341,18 +341,56 @@ let rec fuzz size0 cell =
 
 let () = Misc.stopwatch 1 "Start BFS"
 
-let bfs = Vector.make Reach.Cell.n ([], [])
+let entrypoints =
+  let accepting = Transition.accepting grammar in
+  match !opt_entrypoints with
+  | [] -> accepting
+  | entrypoints ->
+    let table = Hashtbl.create 7 in
+    List.iter (fun name -> Hashtbl.replace table name ()) entrypoints;
+    let entries =
+      IndexSet.filter (fun tr ->
+          let nt =
+            Nonterminal.to_string grammar
+              (Transition.goto_symbol grammar tr)
+          in
+          if Hashtbl.mem table nt
+          then (Hashtbl.remove table nt; true)
+          else false
+        ) accepting
+    in
+    if Hashtbl.length table = 0 then
+      entries
+    else
+      let keys = List.of_seq (Hashtbl.to_seq_keys table) in
+      let cache = Levenshtein.make_cache () in
+      let prepare_candidate tr =
+        let text =
+          Nonterminal.to_string grammar
+            (Transition.goto_symbol grammar tr)
+        in
+        let distance =
+          List.fold_left (fun acc key ->
+              Int.min acc (Levenshtein.distance cache key text))
+            max_int keys
+        in
+        (distance, text)
+      in
+      let candidates =
+        IndexSet.diff accepting entries
+        |> IndexSet.elements
+        |> List.map prepare_candidate
+        |> List.sort (compare_fst Int.compare)
+      in
+      Syntax.error Lexing.dummy_pos
+        "unknown entrypoint%s %s.\n\
+         Valid entrypoints are:\n  "
+        (if List.compare_length_with keys 1 > 0 then "s" else "")
+        (String.concat ", " entrypoints)
+        (string_concat_map ", " snd candidates)
 
-let () =
-  if false then
-    IndexSet.iter (fun entrypoint ->
-        begin match Lr1.is_entrypoint grammar entrypoint with
-          | None -> assert false
-          | Some production ->
-            Printf.eprintf "Entrypoint: %s\n"
-              (Nonterminal.to_string grammar (Production.lhs grammar production))
-        end
-      ) (Lr1.entrypoints grammar)
+
+let bfs = Vector.make Reach.Cell.n ([], [])
 
 let () =
   let todo = ref [] in
@@ -384,7 +422,7 @@ let () =
   IndexSet.iter (fun tr ->
       let node = Reach.Tree.leaf (Transition.of_goto grammar tr) in
       visit ([],[]) (Reach.Cell.encode node ~pre:0 ~post:0)
-    ) (Transition.accepting grammar);
+    ) entrypoints;
   let counter = ref 0 in
   fixpoint ~counter ~propagate todo;
   Misc.stopwatch 1 "Stop BFS (depth: %d)" !counter
