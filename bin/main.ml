@@ -373,7 +373,7 @@ let entrypoints =
       entries
     else
       let keys = List.of_seq (Hashtbl.to_seq_keys table) in
-      let cache = Levenshtein.make_cache () in
+      let cache = Damerau_levenshtein.make_cache () in
       let prepare_candidate tr =
         let text =
           Nonterminal.to_string grammar
@@ -381,7 +381,7 @@ let entrypoints =
         in
         let distance =
           List.fold_left (fun acc key ->
-              Int.min acc (Levenshtein.distance cache key text))
+              Int.min acc (Damerau_levenshtein.distance cache key text))
             max_int keys
         in
         (distance, text)
@@ -594,20 +594,20 @@ let () =
     Syntax.error pos "%s." msg
   | Transl.Unknown_symbol (pos, name) ->
     let candidates = ref [] in
-    let cache = Levenshtein.make_cache () in
+    let cache = Damerau_levenshtein.make_cache () in
     Index.iter (Symbol.cardinal grammar) (fun sym ->
         let name' = Symbol.name grammar sym in
-        let dist = Levenshtein.distance cache name name' in
+        let dist = Damerau_levenshtein.distance cache name name' in
         if dist <= 7 then
           push candidates (dist, name')
       );
     match
       List.sort (compare_fst Int.compare) !candidates
       |> List.take 10
-      |> List.rev
+      |> List.rev_map snd
     with
     | [] -> Syntax.error pos "unknown symbol %s." name
-    | [_, x] -> Syntax.error pos "unknown symbol %s.\nDid you mean %s?" name x
-    | (_, x) :: xs ->
-      Syntax.error pos "unknown symbol %s.\nDid you mean %s or %s?" name
-        (String.concat ", " (List.rev_map (fun (d,x) -> x ^ string_of_int d) xs)) x
+    | [x] -> Syntax.error pos "unknown symbol %s.\nDid you mean %s?" name x
+    | x :: xs ->
+      Syntax.error pos "unknown symbol %s.\nDid you mean %s?" name
+        (String.concat ", " (List.rev (("or " ^ x) :: xs)))
