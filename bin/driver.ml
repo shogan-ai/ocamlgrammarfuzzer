@@ -1,4 +1,4 @@
-let batch_size = 250
+let batch_size = 80
 
 let () = Sys.chdir (Filename.get_temp_dir_name ())
 
