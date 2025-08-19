@@ -465,43 +465,46 @@ let entrypoints =
         (String.concat ", " entrypoints)
         (string_concat_map ", " snd candidates)
 
+type 'a zipper_path =
+  | Left_of of {right: 'a; cell: Reach.Cell.n index}
+  | Right_of of {left: 'a; cell: Reach.Cell.n index}
+  | In_expansion of {reduction: Reach.reduction; cell: Reach.Cell.n index}
 
-let bfs = Vector.make Reach.Cell.n ([], [])
+let bfs = Vector.make Reach.Cell.n []
 
 let () =
   let todo = ref [] in
   let reachable cell = Reach.Analysis.cost cell < max_int in
-  let visit parent cell =
-    if reachable cell then
-      match bfs.:(cell) with
-      | (_::_, _) | (_, _::_ ) -> ()
-      | ([], []) ->
-        bfs.:(cell) <- parent;
-        push todo cell
+  let visit path cell =
+    match bfs.:(cell) with
+    | _ :: _ -> ()
+    | [] ->
+      bfs.:(cell) <- path;
+      push todo cell
   in
   let propagate cell =
-    let prefix, suffix as path = bfs.:(cell) in
+    let path = bfs.:(cell) in
     let node, i_pre, i_post = Reach.Cell.decode cell in
     match Reach.Tree.split node with
     | R (l, r) ->
-      iter_sub_nodes ~f:(fun cl cr ->
-          if reachable cl && reachable cr then (
-            visit (prefix, cr :: suffix) cl;
-            visit (cl :: prefix, suffix) cr;
+      iter_sub_nodes ~f:(fun left right ->
+          if reachable left && reachable right then (
+            visit (Left_of {right; cell} :: path) left;
+            visit (Right_of {left; cell} :: path) right;
           )
         ) i_pre i_post l r
     | L tr ->
       match Transition.split grammar tr with
       | R _ -> ()
       | L gt ->
-        iter_eqns i_pre i_post gt
-          ~f:(fun reduction cell ->
-              if weights.:(reduction.production) > 0.0 then
-                visit path cell)
+        iter_eqns i_pre i_post gt ~f:(fun reduction cell ->
+            if weights.:(reduction.production) > 0.0 then
+              visit (In_expansion {reduction; cell} :: path) cell
+          )
   in
   IndexSet.iter (fun tr ->
       let node = Reach.Tree.leaf (Transition.of_goto grammar tr) in
-      visit ([],[]) (Reach.Cell.encode node ~pre:0 ~post:0)
+      visit [] (Reach.Cell.encode node ~pre:0 ~post:0)
     ) entrypoints;
   let counter = ref 0 in
   fixpoint ~counter ~propagate todo;
@@ -511,7 +514,7 @@ let () =
 
 let terminal_text = Token_printer.for_grammar grammar []
 
-let terminals_of_derivation der =
+let _terminals_of_derivation der =
   let rec loop acc = function
     | Null _ -> acc
     | Shift  {terminal; _} -> terminal :: acc
@@ -631,29 +634,48 @@ let () =
             end eqns.non_nullable;
           );
       );
+      let rec mark_derivation der =
+        Boolvector.clear todo (derivation_cell der);
+        derivation_iter_sub mark_derivation der
+      in
+      let gen_cell length cell =
+        let der =
+          if !opt_exhaust
+          then min_sentence cell
+          else fuzz length cell
+        in
+        mark_derivation der;
+        der
+      in
+      let unroll_path der = function
+        | Left_of {right; cell} ->
+          derivation_node cell der right
+        | Right_of {left; cell} ->
+          derivation_node cell left der
+        | In_expansion {reduction; cell} ->
+          Expand {expansion = der; reduction; cell}
+      in
       Index.iter Reach.Cell.n (fun cell ->
           if Reach.Analysis.cost cell < max_int && Boolvector.test todo cell then (
             match bfs.:(cell) with
-            | [], [] -> () (* Unreachable *)
-            | prefix, suffix ->
-              let rec mark_derivation der =
-                Boolvector.clear todo (derivation_cell der);
-                derivation_iter_sub mark_derivation der
+            | [] -> () (* Unreachable *)
+            | path ->
+              let length = ref !opt_length in
+              let path = List.map (function
+                  | Left_of {right; cell} ->
+                    let right = gen_cell 0 right in
+                    length := !length - derivation_length right;
+                    Left_of {right; cell}
+                  | Right_of {left; cell} ->
+                    let left = gen_cell 0 left in
+                    length := !length - derivation_length left;
+                    Right_of {left; cell}
+                  | In_expansion _ as x -> x
+                ) path
               in
-              let gen_cell length cell =
-                let der =
-                  if !opt_exhaust
-                  then min_sentence cell
-                  else fuzz length cell
-                in
-                mark_derivation der;
-                terminals_of_derivation der
-              in
-              let prefix = List.concat_map (gen_cell 0) prefix in
-              let suffix = List.concat_map (gen_cell 0) suffix in
-              let length = !opt_length - List.length prefix - List.length suffix in
-              let terminals = prefix @ gen_cell length cell @ suffix in
-              List.iter (output_terminal ()) terminals;
+              let der = gen_cell !length cell in
+              let der = List.fold_left unroll_path der path in
+              iter_terminals_of_derivation ~f:(output_terminal ()) der;
               output_char stdout '\n'
           )
         )
