@@ -231,6 +231,7 @@ type derivation =
       cell: Reach.Cell.n index;
       left: derivation;
       right: derivation;
+      length: int;
     }
   | Expand of {
       cell: Reach.Cell.n index;
@@ -242,12 +243,62 @@ let derivation_cell ( Null {cell} | Shift {cell; _}
                     | Node {cell; _} | Expand {cell; _}) =
   cell
 
+let rec derivation_length = function
+  | Null _ -> 0
+  | Shift _ -> 1
+  | Node {length; _} -> length
+  | Expand {expansion; _} -> derivation_length expansion
+
 let derivation_iter_sub f = function
   | Null _ | Shift _ -> ()
   | Node {left; right; _} -> f left; f right
   | Expand {expansion; _} -> f expansion
 
-let _ = ignore derivation_cell
+let derivation_node cell left right =
+  let length = derivation_length left + derivation_length right in
+  Node {cell; left; right; length}
+
+exception Derivation_found of derivation
+
+let rec min_sentence cell =
+  let cost = Reach.Analysis.cost cell in
+  if cost = max_int then
+    failwith "min_sentence: unreachable cell";
+  if cost = 0 then
+    Null {cell}
+  else
+    let node, i_pre, i_post = Reach.Cell.decode cell in
+    try
+    match Reach.Tree.split node with
+      | R (l, r) ->
+        iter_sub_nodes i_pre i_post l r ~f:(fun cl ->
+            let l_cost = Reach.Analysis.cost cl in
+            fun cr ->
+              let r_cost = Reach.Analysis.cost cr in
+              if l_cost < max_int && r_cost < max_int &&
+                 l_cost + r_cost = cost then
+                let der =
+                  derivation_node cell (min_sentence cl) (min_sentence cr)
+                in
+                raise (Derivation_found der)
+          );
+        assert false
+      | L tr ->
+        match Transition.split grammar tr with
+        | R shift ->
+          assert (cost = 1);
+          (* We reached a shift transition *)
+          let terminal = Transition.shift_symbol grammar shift in
+          Shift {cell; terminal}
+        | L goto ->
+          iter_eqns i_pre i_post goto ~f:(fun reduction cell ->
+              if Reach.Analysis.cost cell = cost then
+                let expansion = min_sentence cell in
+                let der = Expand {cell; reduction; expansion} in
+                raise (Derivation_found der)
+            );
+          assert false
+    with Derivation_found der -> der
 
 (* [fuzz target_length cell] generates a derivation of [cell] aiming to have
    [target_length] terminals.
@@ -292,21 +343,21 @@ let rec fuzz size0 cell =
       else
         (Random.int (size + 1) + Random.int (size + 1)) / 2
     in
-    let left_length, left = fuzz (sl + mid) cl in
+    let left = fuzz (sl + mid) cl in
     (* Bias right side:
        - first set an expectation on the position of the split
          between left and right side,
        - generate left side targetting the split position
        - compensate on right side if left side missed expectation
     *)
-    let right_length, right = fuzz (size - left_length) cr in
-    (left_length + right_length, Node {cell; left; right})
+    let right = fuzz (size - derivation_length left) cr in
+    derivation_node cell left right
   | L tr ->
     match Transition.split grammar tr with
     | R shift ->
       (* We reached a shift transition *)
       let terminal = Transition.shift_symbol grammar shift in
-      (1, Shift {cell; terminal})
+      Shift {cell; terminal}
     | L goto ->
       (* It is a goto transition *)
       let eqns = Reach.Tree.goto_equations goto in
@@ -319,7 +370,7 @@ let rec fuzz size0 cell =
         not (IndexSet.disjoint c_pre c_post)
       in
       if size <= 0 && nullable then
-        (0, Null {cell})
+        Null {cell}
       else
         let candidates = ref (
             (* Compute weight of nullable case *)
@@ -344,10 +395,10 @@ let rec fuzz size0 cell =
                                weights.:(reduction.production))
           );
         match sample_list !candidates with
-        | None -> (0, Null {cell})
+        | None -> Null {cell}
         | Some (reduction, cell) ->
-          let length, expansion = fuzz size cell in
-          (length, Expand {cell; expansion; reduction})
+          let expansion = fuzz size cell in
+          Expand {cell; expansion; reduction}
 
 let () = Misc.stopwatch 1 "Start BFS"
 
@@ -473,8 +524,7 @@ let generate_sentence ?(length=100) ?from () =
   assert (Array.length (Reach.Classes.post_transition tr) = 1);
   let node = Reach.Tree.leaf tr in
   let cell = Reach.Cell.encode node ~pre:0 ~post:0 in
-  let _, derivation = fuzz length cell in
-  derivation
+  fuzz length cell
 
 let output_with_comments oc =
   let count = ref 0 in
@@ -576,8 +626,11 @@ let () =
                 derivation_iter_sub mark_derivation der
               in
               let gen_cell length cell =
-                let length = Int.max length (Reach.Analysis.cost cell) in
-                let _, der = fuzz length cell in
+                let der =
+                  if !opt_exhaust
+                  then min_sentence cell
+                  else fuzz length cell
+                in
                 mark_derivation der;
                 terminals_of_derivation der
               in
