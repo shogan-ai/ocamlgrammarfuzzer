@@ -66,15 +66,26 @@ let point_error_position (pat : string) pos =
   in
   loop 0 lines
 
-let pattern_pos =
-  {Lexing.pos_fname = "<pattern>"; pos_lnum = 1;
-   pos_cnum = 0; pos_bol = 0}
+let pattern_pos = {
+  Lexing.pos_fname = "<pattern>";
+  pos_lnum = 1;
+  pos_cnum = 0;
+  pos_bol = 0;
+}
 
 let prepare_lexer pattern =
   let st = Front.Lexer.fresh_state () in
   let lb = Front.Lexer.prepare_lexbuf st (Lexing.from_string pattern) in
   Lexing.set_filename lb "<pattern>";
   (st, lb)
+
+exception Error of Lexing.position * string
+
+let raise_error pos msg =
+  raise (Error (pos, msg))
+
+let raise_errorf pos fmt =
+  Printf.ksprintf (raise_error pos) fmt
 
 let parse_string_with pattern f =
   let st, lb = prepare_lexer pattern in
@@ -87,10 +98,7 @@ let parse_string_with pattern f =
       | _ -> raise exn
     in
     let lines = point_error_position pattern pos in
-    Syntax.error pos "%s.\n  %s" msg (String.concat "\n  " lines)
-
-let raise_error pos fmt =
-  Printf.ksprintf (fun msg -> raise (Front.Lexer.Error {msg; pos})) fmt
+    raise_errorf pos "%s.\n  %s" msg (String.concat "\n  " lines)
 
 let parse_pattern pattern =
   parse_string_with pattern Front.Parser.parse_filter
@@ -112,20 +120,13 @@ let weights = Vector.make (Production.cardinal grammar) 1.0
 
 let symbol_index = Transl.Indices.make grammar
 
-let transl_filter filter =
-  match filter with
+let transl_filter = function
   | {Syntax. lhs = None; rhs = [Syntax.Find (Some symbol), pos]} ->
     (* Special-case: look for all occurrences of a single symbol *)
-    begin match Transl.Indices.find_symbol symbol_index symbol with
-      | None ->
-        raise_error pos "%s is not a valid symbol"
-          (Transl.Indices.string_of_symbol symbol)
-      | Some sym -> Either.Left sym
-    end
-  | _ ->
-    Either.Right
-      (Transl.transl_filter_to_prods
-        grammar symbol_index pattern_pos filter)
+    Either.Left (Transl.Indices.get_symbol symbol_index pos symbol)
+  | filter ->
+    Either.Right (Transl.transl_filter_to_prods
+                    grammar symbol_index pattern_pos filter)
 
 let process_weight (weight, filter) =
   let update_prod prod = weights.@(prod) <- ( *. ) weight in
@@ -499,91 +500,114 @@ let () =
     IndexSet.elements entrypoints
     |> List.map (fun tr -> tr, 1.0)
   in
-  match List.rev !opt_focus with
-  | [] when not !opt_exhaust ->
-    for _ = 0 to !opt_count - 1 do
-      let derivation =
-        generate_sentence
-          ~from:(sample_list entrypoints)
-          ~length:!opt_length ()
-      in
-      iter_terminals_of_derivation derivation ~f:(output_terminal ());
-      output_char stdout '\n'
-    done
-  | focus ->
-    let todo = Boolvector.make Reach.Cell.n !opt_exhaust in
-    if not !opt_exhaust then (
-      let focused_sym = Boolvector.make (Symbol.cardinal grammar) false in
-      let focused_prods = Boolvector.make (Production.cardinal grammar) false in
-      let focused_items = Vector.make (Production.cardinal grammar) IntSet.empty in
-      let process_focus filter =
-        match transl_filter filter with
-        | Either.Left sym ->
-          Boolvector.set focused_sym sym
-        | Either.Right prods ->
-          List.iter (fun (prod, dots) ->
-              if IntSet.is_empty dots
-              then Boolvector.set focused_prods prod
-              else focused_items.@(prod) <- IntSet.union dots
-            ) prods
-      in
-      List.iter (fun spec -> process_focus (parse_pattern spec)) focus;
-      let set_node node = Reach.Cell.iter_node node (Boolvector.set todo) in
-      Index.iter (Transition.any grammar) (fun tr ->
-          if Boolvector.test focused_sym (Transition.symbol grammar tr) then
-            set_node (Reach.Tree.leaf tr)
-        );
-      let rec visit_items i node f =
-        f node i;
-        let i =
-          match Reach.Tree.split node with
-          | L _ -> i + 1
-          | R (l, r) ->
-            let i = visit_items i l f in
-            let i = visit_items i r f in
-            i
+  try
+    match List.rev !opt_focus with
+    | [] when not !opt_exhaust ->
+      for _ = 0 to !opt_count - 1 do
+        let derivation =
+          generate_sentence
+            ~from:(sample_list entrypoints)
+            ~length:!opt_length ()
         in
-        f node i;
-        i
-      in
-      Index.iter (Transition.goto grammar) (fun gt ->
-          let eqns = Reach.Tree.goto_equations gt in
-          if List.exists
-              (fun {Reach.production; _} -> Boolvector.test focused_prods production)
-              eqns.nullable then
-            set_node (Reach.Tree.leaf (Transition.of_goto grammar gt));
-          List.iter begin fun (red, node) ->
-            if Boolvector.test focused_prods red.Reach.production then
-              set_node node;
-            let dots = focused_items.:(red.Reach.production) in
-            if not (IntSet.is_empty dots) then
-              ignore (visit_items 0 node (fun node i ->
-                  if IntSet.mem i dots then
-                    set_node node
-                ) : int)
-          end eqns.non_nullable;
-        );
-    );
-    Index.iter Reach.Cell.n (fun cell ->
-        if Reach.Analysis.cost cell < max_int && Boolvector.test todo cell then (
-          match bfs.:(cell) with
-          | [], [] -> () (* Unreachable *)
-          | prefix, suffix ->
-            let rec mark_derivation der =
-              Boolvector.clear todo (derivation_cell der);
-              derivation_iter_sub mark_derivation der
-            in
-            let gen_cell length cell =
-              let length = Int.max length (Reach.Analysis.cost cell) in
-              let _, der = fuzz length cell in
-              mark_derivation der;
-              terminals_of_derivation der
-            in
-            let prefix = List.concat_map (gen_cell 0) prefix in
-            let suffix = List.concat_map (gen_cell 0) suffix in
-            let length = !opt_length - List.length prefix - List.length suffix in
-            let terminals = prefix @ gen_cell length cell @ suffix in
-            List.iter (output_terminal ()) terminals;
-            output_char stdout '\n'
+        iter_terminals_of_derivation derivation ~f:(output_terminal ());
+        output_char stdout '\n'
+      done
+    | focus ->
+      let todo = Boolvector.make Reach.Cell.n !opt_exhaust in
+      if not !opt_exhaust then (
+        let focused_sym = Boolvector.make (Symbol.cardinal grammar) false in
+        let focused_prods = Boolvector.make (Production.cardinal grammar) false in
+        let focused_items = Vector.make (Production.cardinal grammar) IntSet.empty in
+        let process_focus filter =
+          match transl_filter filter with
+          | Either.Left sym ->
+            Boolvector.set focused_sym sym
+          | Either.Right prods ->
+            List.iter (fun (prod, dots) ->
+                if IntSet.is_empty dots
+                then Boolvector.set focused_prods prod
+                else focused_items.@(prod) <- IntSet.union dots
+              ) prods
+        in
+        List.iter (fun spec -> process_focus (parse_pattern spec)) focus;
+        let set_node node = Reach.Cell.iter_node node (Boolvector.set todo) in
+        Index.iter (Transition.any grammar) (fun tr ->
+            if Boolvector.test focused_sym (Transition.symbol grammar tr) then
+              set_node (Reach.Tree.leaf tr)
+          );
+        let rec visit_items i node f =
+          f node i;
+          let i =
+            match Reach.Tree.split node with
+            | L _ -> i + 1
+            | R (l, r) ->
+              let i = visit_items i l f in
+              let i = visit_items i r f in
+              i
+          in
+          f node i;
+          i
+        in
+        Index.iter (Transition.goto grammar) (fun gt ->
+            let eqns = Reach.Tree.goto_equations gt in
+            if List.exists
+                (fun {Reach.production; _} -> Boolvector.test focused_prods production)
+                eqns.nullable then
+              set_node (Reach.Tree.leaf (Transition.of_goto grammar gt));
+            List.iter begin fun (red, node) ->
+              if Boolvector.test focused_prods red.Reach.production then
+                set_node node;
+              let dots = focused_items.:(red.Reach.production) in
+              if not (IntSet.is_empty dots) then
+                ignore (visit_items 0 node (fun node i ->
+                    if IntSet.mem i dots then
+                      set_node node
+                  ) : int)
+            end eqns.non_nullable;
+          );
+      );
+      Index.iter Reach.Cell.n (fun cell ->
+          if Reach.Analysis.cost cell < max_int && Boolvector.test todo cell then (
+            match bfs.:(cell) with
+            | [], [] -> () (* Unreachable *)
+            | prefix, suffix ->
+              let rec mark_derivation der =
+                Boolvector.clear todo (derivation_cell der);
+                derivation_iter_sub mark_derivation der
+              in
+              let gen_cell length cell =
+                let length = Int.max length (Reach.Analysis.cost cell) in
+                let _, der = fuzz length cell in
+                mark_derivation der;
+                terminals_of_derivation der
+              in
+              let prefix = List.concat_map (gen_cell 0) prefix in
+              let suffix = List.concat_map (gen_cell 0) suffix in
+              let length = !opt_length - List.length prefix - List.length suffix in
+              let terminals = prefix @ gen_cell length cell @ suffix in
+              List.iter (output_terminal ()) terminals;
+              output_char stdout '\n'
+          )
         )
-      )
+  with
+  | Error (pos, msg) ->
+    Syntax.error pos "%s." msg
+  | Transl.Unknown_symbol (pos, name) ->
+    let candidates = ref [] in
+    let cache = Levenshtein.make_cache () in
+    Index.iter (Symbol.cardinal grammar) (fun sym ->
+        let name' = Symbol.name grammar sym in
+        let dist = Levenshtein.distance cache name name' in
+        if dist <= 7 then
+          push candidates (dist, name')
+      );
+    match
+      List.sort (compare_fst Int.compare) !candidates
+      |> List.take 10
+      |> List.rev
+    with
+    | [] -> Syntax.error pos "unknown symbol %s." name
+    | [_, x] -> Syntax.error pos "unknown symbol %s.\nDid you mean %s?" name x
+    | (_, x) :: xs ->
+      Syntax.error pos "unknown symbol %s.\nDid you mean %s or %s?" name
+        (String.concat ", " (List.rev_map (fun (d,x) -> x ^ string_of_int d) xs)) x

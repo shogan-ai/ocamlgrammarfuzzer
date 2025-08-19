@@ -4,6 +4,11 @@ open Syntax
 open Fix.Indexing
 open Info
 
+exception Unknown_symbol of Lexing.position * string
+
+let unknown_symbol pos name =
+  raise (Unknown_symbol (pos, name))
+
 (* Index LR(1) states by incoming symbol, goto transitions, items, ... *)
 module Indices = struct
   open Info
@@ -126,7 +131,7 @@ module Indices = struct
 
   let get_symbol indices pos sym =
     match find_symbol indices sym with
-    | None -> error pos "Unknown symbol %s" (string_of_symbol sym)
+    | None -> unknown_symbol pos (string_of_symbol sym)
     | Some sym -> sym
 end
 
@@ -164,7 +169,7 @@ module Globbing = struct
       let last, tail = structure_filter indices rest in
       let set = Indices.find_symbols indices sym in
       if IndexSet.is_empty set then
-        error pos "Unknown symbol %s" (Indices.string_of_symbol (Option.get sym));
+        unknown_symbol pos (Indices.string_of_symbol (Option.get sym));
       (`Find set :: last, tail)
 
   let normalize_filter = function
