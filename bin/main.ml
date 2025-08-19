@@ -260,45 +260,60 @@ let derivation_node cell left right =
 
 exception Derivation_found of derivation
 
-let rec min_sentence cell =
-  let cost = Reach.Analysis.cost cell in
-  if cost = max_int then
-    failwith "min_sentence: unreachable cell";
-  if cost = 0 then
-    Null {cell}
-  else
-    let node, i_pre, i_post = Reach.Cell.decode cell in
-    try
-    match Reach.Tree.split node with
-      | R (l, r) ->
-        iter_sub_nodes i_pre i_post l r ~f:(fun cl ->
-            let l_cost = Reach.Analysis.cost cl in
-            fun cr ->
-              let r_cost = Reach.Analysis.cost cr in
-              if l_cost < max_int && r_cost < max_int &&
-                 l_cost + r_cost = cost then
-                let der =
-                  derivation_node cell (min_sentence cl) (min_sentence cr)
-                in
-                raise (Derivation_found der)
-          );
-        assert false
-      | L tr ->
-        match Transition.split grammar tr with
-        | R shift ->
-          assert (cost = 1);
-          (* We reached a shift transition *)
-          let terminal = Transition.shift_symbol grammar shift in
-          Shift {cell; terminal}
-        | L goto ->
-          iter_eqns i_pre i_post goto ~f:(fun reduction cell ->
-              if Reach.Analysis.cost cell = cost then
-                let expansion = min_sentence cell in
-                let der = Expand {cell; reduction; expansion} in
-                raise (Derivation_found der)
-            );
-          assert false
-    with Derivation_found der -> der
+let min_sentence =
+  let solve = lazy (
+    let sentinel = Null {cell = Index.of_int Reach.Cell.n 0} in
+    let table = Vector.make Reach.Cell.n sentinel in
+    let rec solve cell =
+      match table.:(cell) with
+      | result when result != sentinel -> result
+      | _ ->
+        let cost = Reach.Analysis.cost cell in
+        if cost = max_int then
+          failwith "min_sentence: unreachable cell";
+        let result =
+          if cost = 0 then
+            Null {cell}
+          else
+            let node, i_pre, i_post = Reach.Cell.decode cell in
+            try
+              match Reach.Tree.split node with
+              | R (l, r) ->
+                iter_sub_nodes i_pre i_post l r ~f:(fun cl ->
+                    let l_cost = Reach.Analysis.cost cl in
+                    fun cr ->
+                      let r_cost = Reach.Analysis.cost cr in
+                      if l_cost < max_int && r_cost < max_int &&
+                         l_cost + r_cost = cost then
+                        let der =
+                          derivation_node cell (solve cl) (solve cr)
+                        in
+                        raise (Derivation_found der)
+                  );
+                assert false
+              | L tr ->
+                match Transition.split grammar tr with
+                | R shift ->
+                  assert (cost = 1);
+                  (* We reached a shift transition *)
+                  let terminal = Transition.shift_symbol grammar shift in
+                  Shift {cell; terminal}
+                | L goto ->
+                  iter_eqns i_pre i_post goto ~f:(fun reduction cell ->
+                      if Reach.Analysis.cost cell = cost then
+                        let expansion = solve cell in
+                        let der = Expand {cell; reduction; expansion} in
+                        raise (Derivation_found der)
+                    );
+                  assert false
+            with Derivation_found der -> der
+        in
+        table.:(cell) <- result;
+        result
+    in
+    solve
+  ) in
+  fun cell -> Lazy.force solve cell
 
 (* [fuzz target_length cell] generates a derivation of [cell] aiming to have
    [target_length] terminals.
