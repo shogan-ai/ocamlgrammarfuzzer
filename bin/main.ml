@@ -10,6 +10,7 @@ let opt_comments = ref false
 let opt_seed = ref (-1)
 let opt_oxcaml = ref false
 let opt_entrypoints = ref []
+let opt_print_entrypoint = ref false
 let opt_weights = ref []
 let opt_avoid = ref []
 let opt_focus = ref []
@@ -26,6 +27,7 @@ let spec_list = [
   ("--oxcaml"   , Arg.Set opt_oxcaml, " Work with Oxcaml dialect");
   ("-v"         , Arg.Unit (fun () -> incr Misc.verbosity_level), " Increase verbosity");
   ("--entrypoint", Arg.String (push opt_entrypoints), " Generate sentences from this entrypoint");
+  ("--print-entrypoint", Arg.Set opt_print_entrypoint, " Prefix every sentence by the entrypoint followed by ':'");
   ("--weight", Arg.String (push opt_weights), " Adjust the weights of grammatical constructions");
   ("--avoid", Arg.String (push opt_avoid), " Forbid grammatical constructions");
   ("--focus", Arg.String (push opt_focus), " Generate sentences stressing a grammatical construction");
@@ -497,9 +499,9 @@ let () =
       match Transition.split grammar tr with
       | R _ -> ()
       | L gt ->
-        iter_eqns i_pre i_post gt ~f:(fun reduction cell ->
+        iter_eqns i_pre i_post gt ~f:(fun reduction cell' ->
             if weights.:(reduction.production) > 0.0 then
-              visit (In_expansion {reduction; cell} :: path) cell
+              visit (In_expansion {reduction; cell} :: path) cell'
           )
   in
   IndexSet.iter (fun tr ->
@@ -675,6 +677,20 @@ let () =
               in
               let der = gen_cell !length cell in
               let der = List.fold_left unroll_path der path in
+              if !opt_print_entrypoint then (
+                let entrypoint =
+                  match List.fold_left (fun _ p -> p) (List.hd path) path with
+                  | In_expansion {cell; _} ->
+                    let node, _, _ = Reach.Cell.decode cell in
+                    begin match Reach.Tree.split node with
+                      | R _ -> assert false
+                      | L tr -> Transition.symbol grammar tr
+                    end
+                  | _ -> assert false
+                in
+                output_string stdout (Symbol.name grammar entrypoint);
+                output_string stdout ": ";
+              );
               iter_terminals_of_derivation ~f:(output_terminal ()) der;
               output_char stdout '\n'
           )
