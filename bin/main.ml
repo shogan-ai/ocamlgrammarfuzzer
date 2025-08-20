@@ -171,7 +171,7 @@ let sample_list = function
 
 let iter_sub_nodes ~f i_pre i_post l r =
   let coercion =
-    Reach.Coercion.infix (Reach.Tree.post_classes l)
+    Reachability.Coercion.infix (Reach.Tree.post_classes l)
       (Reach.Tree.pre_classes r)
   in
   let l_index = Reach.Cell.encode l in
@@ -185,15 +185,15 @@ let iter_sub_nodes ~f i_pre i_post l r =
         let cr = r_index ~pre:i_pre_r ~post:i_post in
         f' cr
       end all_pre_r
-  end coercion.Reach.Coercion.forward
+  end coercion.Reachability.Coercion.forward
 
 let iter_eqns ~f i_pre i_post goto =
   let tr = Transition.of_goto grammar goto in
   let c_pre = (Reach.Classes.pre_transition tr).(i_pre) in
   let c_post = (Reach.Classes.post_transition tr).(i_post) in
   let eqns = Reach.Tree.goto_equations goto in
-  List.iter begin fun (reduction, node') ->
-    if IndexSet.disjoint c_post reduction.Reach.lookahead then
+  List.iter begin fun ((reduction : _ Reachability.reduction), node') ->
+    if IndexSet.disjoint c_post reduction.lookahead then
       (* The post lookahead class does not permit reducing this
          production *)
       ()
@@ -238,7 +238,7 @@ type derivation =
   | Expand of {
       cell: Reach.Cell.n index;
       expansion: derivation;
-      reduction: Reach.reduction;
+      reduction: g Reachability.reduction;
     }
 
 let derivation_cell ( Null {cell} | Shift {cell; _}
@@ -392,8 +392,8 @@ let rec fuzz size0 cell =
         let candidates = ref (
             (* Compute weight of nullable case *)
             let weight =
-              List.fold_left (fun acc reduction ->
-                  if IndexSet.quick_subset c_post reduction.Reach.lookahead
+              List.fold_left (fun acc (reduction : _ Reachability.reduction) ->
+                  if IndexSet.quick_subset c_post reduction.lookahead
                   then acc +. weights.:(reduction.production)
                   else acc
                 ) 0.0 eqns.nullable
@@ -470,7 +470,10 @@ let entrypoints =
 type 'a zipper_path =
   | Left_of of {right: 'a; cell: Reach.Cell.n index}
   | Right_of of {left: 'a; cell: Reach.Cell.n index}
-  | In_expansion of {reduction: Reach.reduction; cell: Reach.Cell.n index}
+  | In_expansion of {
+      reduction: g Reachability.reduction;
+      cell: Reach.Cell.n index;
+    }
 
 let bfs = Vector.make Reach.Cell.n []
 
@@ -621,13 +624,14 @@ let () =
         Index.iter (Transition.goto grammar) (fun gt ->
             let eqns = Reach.Tree.goto_equations gt in
             if List.exists
-                (fun {Reach.production; _} -> Boolvector.test focused_prods production)
+                (fun {Reachability.production; _} ->
+                   Boolvector.test focused_prods production)
                 eqns.nullable then
               set_node (Reach.Tree.leaf (Transition.of_goto grammar gt));
-            List.iter begin fun (red, node) ->
-              if Boolvector.test focused_prods red.Reach.production then
+            List.iter begin fun ((red : _ Reachability.reduction), node) ->
+              if Boolvector.test focused_prods red.production then
                 set_node node;
-              let dots = focused_items.:(red.Reach.production) in
+              let dots = focused_items.:(red.production) in
               if not (IntSet.is_empty dots) then
                 ignore (visit_items 0 node (fun node i ->
                     if IntSet.mem i dots then

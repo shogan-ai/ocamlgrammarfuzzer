@@ -36,28 +36,34 @@ open Utils
 open Misc
 open Info
 
+type 'g reduction = {
+  (* The production that is being reduced *)
+  production: 'g production index;
+
+  (* The set of lookahead terminals that allow this reduction to happen *)
+  lookahead: 'g terminal indexset;
+
+  (* The shape of the stack, all the transitions that are replaced by the
+     goto transition when the reduction is performed *)
+  steps: 'g transition index list;
+
+  (* The lr1 state at the top of the stack before reducing.
+     That is [state] can reduce [production] when the lookahead terminal
+     is in [lookahead]. *)
+  state: 'g lr1 index;
+}
+
+type ('g, 'node) tree_equations = {
+  nullable_lookaheads: 'g terminal indexset;
+  nullable: 'g reduction list;
+  non_nullable: ('g reduction * 'node index) list;
+}
+
 module type S = sig
   type g
 
-  type reduction = {
-    (* The production that is being reduced *)
-    production: g production index;
-
-    (* The set of lookahead terminals that allow this reduction to happen *)
-    lookahead: g terminal indexset;
-
-    (* The shape of the stack, all the transitions that are replaced by the
-       goto transition when the reduction is performed *)
-    steps: g transition index list;
-
-    (* The lr1 state at the top of the stack before reducing.
-       That is [state] can reduce [production] when the lookahead terminal
-       is in [lookahead]. *)
-    state: g lr1 index;
-  }
-
   (* [unreduce tr] lists all the reductions that ends up following [tr]. *)
-  val unreduce : g goto_transition index -> reduction list
+  val unreduce : g goto_transition index -> g reduction list
 
   module Classes : sig
     (* Returns the classes of terminals for a given goto transition *)
@@ -73,24 +79,6 @@ module type S = sig
     val post_transition : g transition index -> g terminal indexset array
   end
 
-  module Coercion : sig
-    type pre = Pre_identity | Pre_singleton of int
-
-    (* Compute the pre coercion from a partition of the form
-         P = first(cost(s, A))
-       to a partition of the form
-         Q = first(ccost(s, A → ϵ•α)))
-    *)
-    val pre : 'a indexset array -> 'a indexset array -> pre option
-
-    type forward = int array array
-    type backward = int array
-    type infix = { forward : forward; backward : backward; }
-
-    (* Compute the infix coercion from two partitions P Q such that Q <= P *)
-    val infix : ?lookahead:'a indexset -> 'a indexset array -> 'a indexset array -> infix
-  end
-
   module Tree : sig
     include CARDINAL
 
@@ -101,12 +89,7 @@ module type S = sig
     val split : n index -> (g transition index, n index * n index) either
 
     (* Returns the nullable terminals and non-nullable equations for a given goto transition *)
-    type equations = {
-      nullable_lookaheads: g terminal indexset;
-      nullable: reduction list;
-      non_nullable: (reduction * n index) list;
-    }
-    val goto_equations : g goto_transition index -> equations
+    val goto_equations : g goto_transition index -> (g, n) tree_equations
 
     (* Returns the pre-classes for a given node *)
     val pre_classes : n index -> g terminal indexset array
@@ -160,15 +143,140 @@ end
 
 type 'g t = (module S with type g = 'g)
 
+(* Testing class inclusion *)
+let quick_subset = IndexSet.quick_subset
+
+(* ---------------------------------------------------------------------- *)
+
+(* This module implements efficient representations of the coerce matrices,
+   as mentioned in section 6.5.
+
+   However, our implementation has one more optimization.
+   In general, we omit the last block of a partition (it can still be deduced
+   by removing the other blocks from the universe T, see section 6.1).  The
+   block that is omitted is one that is guaranteed to have infinite cost in
+   the compact cost matrix.
+   Therefore, we never need to represent the rows and columns that correspond
+   to the missing class; by construction we know they have infinite cost.
+   For instance for shift transitions, it means we only have a 1x1 matrix:
+   the two classes are the terminal being shifted, with a cost of one, and
+   its complement, with an infinite cost, that is omitted.
+
+   Our coercion functions are augmented to handle this special case.
+*)
+module Coercion : sig
+  type pre = Pre_identity | Pre_singleton of int
+
+  (* Compute the pre coercion from a partition of the form
+       P = first(cost(s, A))
+     to a partition of the form
+       Q = first(ccost(s, A → ϵ•α)))
+  *)
+  val pre : 'a indexset array -> 'a indexset array -> pre option
+
+  type forward = int array array
+  type backward = int array
+  type infix = { forward : forward; backward : backward; }
+
+  (* Compute the infix coercion from two partitions P Q such that Q <= P *)
+  val infix : ?lookahead:'a indexset -> 'a indexset array -> 'a indexset array -> infix
+end = struct
+
+  (* Pre coercions are used to handle the minimum in equation (7):
+     ccost(s, A → ϵ•α) · creduce(s, A → α)
+
+     If α begins with a terminal, it will have only one class.
+     This is handled by the [Pre_singleton x] constructor that indicates that
+     this only class should be coerced to class [x].
+
+     If α begins with a non-terminal, [Pre_identity] is used: ccost(s, A) and
+     ccost(s, A → ϵ•α) are guaranteed to have the same "first" classes.
+  *)
+  type pre =
+    | Pre_identity
+    | Pre_singleton of int
+
+  (* Compute the pre coercion from a partition of the form
+       P = first(cost(s, A))
+     to a partition of the form
+       Q = first(ccost(s, A → ϵ•α)))
+
+     If α starts with a terminal, we look only for the
+  *)
+  let pre outer inner =
+    if outer == inner then
+      Some Pre_identity
+    else (
+      assert (Array.length inner = 1);
+      assert (IndexSet.is_singleton inner.(0));
+      let t = IndexSet.choose inner.(0) in
+      match Utils.Misc.array_findi (fun _ ts -> IndexSet.mem t ts) 0 outer with
+      | i -> Some (Pre_singleton i)
+      | exception Not_found ->
+        (* If the production that starts with the 'inner' partition cannot be
+           reduced (because of conflict resolution), the transition becomes
+           unreachable and the terminal `t` might belong to no classes.
+        *)
+        None
+    )
+
+  (* The type infix is the general representation for the coercion matrices
+     coerce(P, Q) appearing in M1 · coerce(P, Q) · M2
+
+     Since Q is finer than P, a class of P maps to multiple classes of Q.
+     This is represented by the forward array: a class p in P maps to all
+     classes q in array [forward.(p)].
+
+     The other direction is an injection: a class q in Q maps to class
+     [backward.(q)] in P.
+
+     The special class [-1] represents a class that is not mapped in the
+     partition (this occurs for instance when using creduce to filter a
+     partition).
+  *)
+  type forward = int array array
+  type backward = int array
+  type infix = { forward: forward; backward: backward }
+
+  (* Compute the infix coercion from two partitions P Q such that Q <= P.
+
+     The optional [lookahead] argument is used to filter classes outside of a
+     certain set of terminals, exactly like the ↓ operator on partitions.
+     This is used to implement creduce operator.
+  *)
+  let infix ?lookahead pre_classes post_classes =
+    let forward_size = Array.make (Array.length pre_classes) 0 in
+    let backward =
+      Array.map (fun ca ->
+          let keep = match lookahead with
+            | None -> true
+            | Some la -> quick_subset ca la
+          in
+          if keep then (
+            match
+              Utils.Misc.array_findi
+                (fun _ cb -> quick_subset ca cb) 0 pre_classes
+            with
+            | exception Not_found -> -1
+            | i -> forward_size.(i) <- 1 + forward_size.(i); i
+          ) else (-1)
+        ) post_classes
+    in
+    let forward = Array.map (fun sz -> Array.make sz 0) forward_size in
+    Array.iteri (fun i_pre i_f ->
+        if i_f <> -1 then (
+          let pos = forward_size.(i_f) - 1 in
+          forward_size.(i_f) <- pos;
+          forward.(i_f).(pos) <- i_pre
+        )
+      ) backward;
+    { forward; backward }
+end
+
+(* ---------------------------------------------------------------------- *)
+
 let make (type g) ?(avoid=fun _ -> false) (g : g grammar) : g t = (module struct
   type nonrec g = g
-
-  (* ---------------------------------------------------------------------- *)
-
-  (* Useful definitions *)
-
-  (* Testing class inclusion *)
-  let quick_subset = IndexSet.quick_subset
 
   (* ---------------------------------------------------------------------- *)
 
@@ -180,25 +288,8 @@ let make (type g) ?(avoid=fun _ -> false) (g : g grammar) : g t = (module struct
      paper but is more convenient for the rest of the implementation.
   *)
 
-  type reduction = {
-    (* The production that is being reduced *)
-    production: g production index;
-
-    (* The set of lookahead terminals that allow this reduction to happen *)
-    lookahead: g terminal indexset;
-
-    (* The shape of the stack, all the transitions that are replaced by the
-       goto transition when the reduction is performed *)
-    steps: g transition index list;
-
-    (* The lr1 state at the top of the stack before reducing.
-       That is [state] can reduce [production] when the lookahead terminal
-       is in [lookahead]. *)
-    state: g lr1 index;
-  }
-
   (* [unreduce tr] lists all the reductions that ends up following [tr]. *)
-  let unreduce : g goto_transition index -> reduction list =
+  let unreduce : g goto_transition index -> g reduction list =
     let table = Vector.make (Transition.goto g) [] in
     (* [add_reduction lr1 (production, lookahead)] populates [table] by
        simulating the reduction [production], starting from [lr1] when
@@ -499,128 +590,12 @@ let make (type g) ?(avoid=fun _ -> false) (g : g grammar) : g t = (module struct
     end
   end
 
-  (* ---------------------------------------------------------------------- *)
-
-  (* This module implements efficient representations of the coerce matrices,
-     as mentioned in section 6.5.
-
-     However, our implementation has one more optimization.
-     In general, we omit the last block of a partition (it can still be deduced
-     by removing the other blocks from the universe T, see section 6.1).  The
-     block that is omitted is one that is guaranteed to have infinite cost in
-     the compact cost matrix.
-     Therefore, we never need to represent the rows and columns that correspond
-     to the missing class; by construction we know they have infinite cost.
-     For instance for shift transitions, it means we only have a 1x1 matrix:
-     the two classes are the terminal being shifted, with a cost of one, and
-     its complement, with an infinite cost, that is omitted.
-
-     Our coercion functions are augmented to handle this special case.
-  *)
-  module Coercion = struct
-
-    (* Pre coercions are used to handle the minimum in equation (7):
-       ccost(s, A → ϵ•α) · creduce(s, A → α)
-
-       If α begins with a terminal, it will have only one class.
-       This is handled by the [Pre_singleton x] constructor that indicates that
-       this only class should be coerced to class [x].
-
-       If α begins with a non-terminal, [Pre_identity] is used: ccost(s, A) and
-       ccost(s, A → ϵ•α) are guaranteed to have the same "first" classes.
-    *)
-    type pre =
-      | Pre_identity
-      | Pre_singleton of int
-
-    (* Compute the pre coercion from a partition of the form
-         P = first(cost(s, A))
-       to a partition of the form
-         Q = first(ccost(s, A → ϵ•α)))
-
-       If α starts with a terminal, we look only for the
-    *)
-    let pre outer inner =
-      if outer == inner then
-        Some Pre_identity
-      else (
-        assert (Array.length inner = 1);
-        assert (IndexSet.is_singleton inner.(0));
-        let t = IndexSet.choose inner.(0) in
-        match Utils.Misc.array_findi (fun _ ts -> IndexSet.mem t ts) 0 outer with
-        | i -> Some (Pre_singleton i)
-        | exception Not_found ->
-          (* If the production that starts with the 'inner' partition cannot be
-             reduced (because of conflict resolution), the transition becomes
-             unreachable and the terminal `t` might belong to no classes.
-          *)
-          None
-      )
-
-    (* The type infix is the general representation for the coercion matrices
-       coerce(P, Q) appearing in M1 · coerce(P, Q) · M2
-
-       Since Q is finer than P, a class of P maps to multiple classes of Q.
-       This is represented by the forward array: a class p in P maps to all
-       classes q in array [forward.(p)].
-
-       The other direction is an injection: a class q in Q maps to class
-       [backward.(q)] in P.
-
-       The special class [-1] represents a class that is not mapped in the
-       partition (this occurs for instance when using creduce to filter a
-       partition).
-    *)
-    type forward = int array array
-    type backward = int array
-    type infix = { forward: forward; backward: backward }
-
-    (* Compute the infix coercion from two partitions P Q such that Q <= P.
-
-       The optional [lookahead] argument is used to filter classes outside of a
-       certain set of terminals, exactly like the ↓ operator on partitions.
-       This is used to implement creduce operator.
-    *)
-    let infix ?lookahead pre_classes post_classes =
-      let forward_size = Array.make (Array.length pre_classes) 0 in
-      let backward =
-        Array.map (fun ca ->
-            let keep = match lookahead with
-              | None -> true
-              | Some la -> quick_subset ca la
-            in
-            if keep then (
-              match
-                Utils.Misc.array_findi
-                  (fun _ cb -> quick_subset ca cb) 0 pre_classes
-              with
-              | exception Not_found -> -1
-              | i -> forward_size.(i) <- 1 + forward_size.(i); i
-            ) else (-1)
-          ) post_classes
-      in
-      let forward = Array.map (fun sz -> Array.make sz 0) forward_size in
-      Array.iteri (fun i_pre i_f ->
-          if i_f <> -1 then (
-            let pos = forward_size.(i_f) - 1 in
-            forward_size.(i_f) <- pos;
-            forward.(i_f).(pos) <- i_pre
-          )
-        ) backward;
-      { forward; backward }
-  end
 
   (* ---------------------------------------------------------------------- *)
 
   (* The hash-consed tree of all matrix equations (products and minimums). *)
   module Tree = struct
     include ConsedTree()
-
-    type equations = {
-      nullable_lookaheads: g terminal indexset;
-      nullable: reduction list;
-      non_nullable: (reduction * n index) list;
-    }
 
     let goto_equations =
       (* Explicit representation of the rhs of equation (7).
