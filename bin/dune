@@ -5,6 +5,6 @@
  (libraries grammarfuzzer menhirSdk front ocaml_parser ocaml_grammar ocaml_jane_grammar))
 
 (executable
- (name driver)
- (modules driver)
+ (name mini_driver)
+ (modules mini_driver)
  (libraries grammarfuzzer unix))
