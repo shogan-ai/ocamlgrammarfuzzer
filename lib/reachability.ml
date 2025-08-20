@@ -59,8 +59,18 @@ type ('g, 'node) tree_equations = {
   non_nullable: ('g reduction * 'node index) list;
 }
 
+module Tree_cardinal = Unsafe_cardinal()
+type 'r tree_node = 'r Tree_cardinal.t
+
+module Cell_cardinal = Unsafe_cardinal()
+type 'r cell = 'r Cell_cardinal.t
+
+module Goto_cell_cardinal = Unsafe_cardinal()
+type 'r goto_cell = 'r Goto_cell_cardinal.t
+
 module type S = sig
   type g
+  type r
 
   (* [unreduce tr] lists all the reductions that ends up following [tr]. *)
   val unreduce : g goto_transition index -> g reduction list
@@ -80,7 +90,7 @@ module type S = sig
   end
 
   module Tree : sig
-    include CARDINAL
+    include CARDINAL with type n = r tree_node
 
     (* Returns the leaf node corresponding to a given transition *)
     val leaf : g transition index -> n index
@@ -102,7 +112,7 @@ module type S = sig
      A [Cell.n index] can be thought of as a triple made of a tree node and two indices
      (row, col) of the compact cost matrix associated to the node. *)
   module Cell : sig
-    include CARDINAL
+    include CARDINAL with type n = r cell
 
     (* A value of type row represents the index of a row of a matrix.
        A row of node [n] belongs to the interval
@@ -126,7 +136,7 @@ module type S = sig
     (* Index of the first cell of matrix associated to a node *)
     val first_cell : Tree.n index -> n index
 
-    type goto
+    type goto = r goto_cell
     val goto : goto cardinal
     val is_goto : n index -> goto index option
     val of_goto : goto index -> n index
@@ -141,7 +151,8 @@ module type S = sig
   end
 end
 
-type 'g t = (module S with type g = 'g)
+type ('g, 'r) t = (module S with type g = 'g and type r = 'r)
+type 'g _t = (module S with type g = 'g)
 
 (* Testing class inclusion *)
 let quick_subset = IndexSet.quick_subset
@@ -275,8 +286,9 @@ end
 
 (* ---------------------------------------------------------------------- *)
 
-let make (type g) ?(avoid=fun _ -> false) (g : g grammar) : g t = (module struct
+let make (type g) ?(avoid=fun _ -> false) (g : g grammar) : g _t = (module struct
   type nonrec g = g
+  type r
 
   (* ---------------------------------------------------------------------- *)
 
@@ -516,7 +528,7 @@ let make (type g) ?(avoid=fun _ -> false) (g : g grammar) : g t = (module struct
      Occurrences of [(ccost(s, A → α•xβ)] are mapped to inner nodes, except
      that the chain of multiplication are re-associated.
   *)
-  module ConsedTree () : sig
+  module type CONSEDTREE = sig
     (* The finite set of nodes of the tree.
        The set is not frozen yet: as long as its cardinal has not been
        observed, new nodes can be added. *)
@@ -543,7 +555,9 @@ let make (type g) ?(avoid=fun _ -> false) (g : g grammar) : g t = (module struct
     module FreezeTree() : sig
       val define : Inner.n index -> n index * n index
     end
-  end = struct
+  end
+
+  module ConsedTree : CONSEDTREE = struct
     (* The fresh finite set of all inner nodes *)
     module Inner = Gensym()
     (* The nodes of the trees is the disjoint sum of all transitions
@@ -572,30 +586,44 @@ let make (type g) ?(avoid=fun _ -> false) (g : g grammar) : g t = (module struct
           Hashtbl.add node_table p i;
           i
       in
-      inj_r node_index
+      inject node_index
 
     (* When all nodes have been created, the set of nodes can be frozen.
        A reverse index is created to get the children of an inner node. *)
     module FreezeTree() =
     struct
-      let rev_index = Vector.make' Inner.n
-          (fun () -> let dummy = Index.of_int n 0 in (dummy, dummy))
+      let rev_index =
+        Vector.make' Inner.n (fun () ->
+            let dummy = Index.of_int n 0 in
+            (dummy, dummy)
+          )
 
       let define ix = rev_index.:(ix)
 
       let () =
         Hashtbl.iter
-          (fun pair index -> rev_index.:(index) <- unpack pair)
+          (fun pair index ->
+             rev_index.:(index) <- unpack pair)
           node_table
     end
   end
 
+  let transport (type a b) (eq : (b, a) eq)
+      (m : (module CONSEDTREE with type n = a))
+      : (module CONSEDTREE with type n = b)
+      =
+      let Refl = eq in
+      m
 
   (* ---------------------------------------------------------------------- *)
 
   (* The hash-consed tree of all matrix equations (products and minimums). *)
   module Tree = struct
-    include ConsedTree()
+    include Tree_cardinal.Eq(struct
+        type t = r
+        include ConsedTree
+      end)
+    include (val transport eq (module ConsedTree))
 
     let goto_equations =
       (* Explicit representation of the rhs of equation (7).
@@ -705,7 +733,7 @@ let make (type g) ?(avoid=fun _ -> false) (g : g grammar) : g t = (module struct
      a node, a row index and a column index of the compact cost matrix
   *)
   module Cell : sig
-    include CARDINAL
+    include CARDINAL with type n = r cell
 
     (* A value of type row represents the index of a row of a matrix.
        A row of node [n] belongs to the interval
@@ -729,7 +757,7 @@ let make (type g) ?(avoid=fun _ -> false) (g : g grammar) : g t = (module struct
     (* Index of the first cell of matrix associated to a node *)
     val first_cell : Tree.n index -> n index
 
-    type goto
+    type goto = r goto_cell
     val goto : goto cardinal
     val is_goto : n index -> goto index option
     val of_goto : goto index -> n index
@@ -759,7 +787,7 @@ let make (type g) ?(avoid=fun _ -> false) (g : g grammar) : g t = (module struct
       end;
       (!n, bits_needed !max_pre, bits_needed !max_post)
 
-    include Const(struct let cardinal = n end)
+    include Cell_cardinal.Const(struct type t = r let cardinal = n end)
 
     let mapping = Vector.make n 0
 
@@ -811,7 +839,8 @@ let make (type g) ?(avoid=fun _ -> false) (g : g grammar) : g t = (module struct
         let next = Index.of_int Tree.n ((last :> int) + 1) in
         ((first_goto_node :> int), first, first_cell.:(next) - 1)
 
-    module Goto = Const(struct
+    module Goto = Goto_cell_cardinal.Const(struct
+        type t = r
         let cardinal = last_goto_cell - first_goto_cell + 1
       end)
 
