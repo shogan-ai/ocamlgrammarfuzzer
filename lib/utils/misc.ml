@@ -406,6 +406,41 @@ let stopwatch level fmt =
   ) else
     Printf.ifprintf stderr fmt
 
+let read_lines ic =
+  let rec loop () =
+    match input_line ic with
+    | line -> Seq.Cons (line, loop)
+    | exception End_of_file -> Seq.Nil
+  in
+  loop
+
+let batch_by ~size seq =
+  assert (size > 0);
+  let rec take acc n seq =
+    if n = 0 then
+      Seq.Cons (List.rev acc, start seq)
+    else
+      match seq () with
+      | Seq.Nil -> Seq.Cons (List.rev acc, Seq.empty)
+      | Seq.Cons (x, xs) -> take (x :: acc) (n - 1) xs
+  and start seq () =
+    match seq () with
+    | Seq.Nil -> Seq.Nil
+    | Seq.Cons (x, xs) ->
+      take [x] (size - 1) xs
+  in
+  start seq
+
+let failwithf fmt = Printf.ksprintf failwith fmt
+
+let string_chop_prefix ~prefix str =
+  if String.starts_with ~prefix str then
+    let lp = String.length prefix in
+    let ls = String.length str in
+    Some (String.sub str lp (ls - lp))
+  else
+    None
+
 let rewrite_keywords f (pos : Lexing.position) str =
   let b = Bytes.of_string str in
   let l = Bytes.length b in
