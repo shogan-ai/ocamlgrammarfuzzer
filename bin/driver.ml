@@ -36,30 +36,20 @@ let string_chop_prefix ~prefix str =
 module Ocamlformat = struct
 
   module Error = struct
-    type 'a t =
+    type t =
       | Syntax of {
-          input: 'a;
           line: int;
           char_range: int * int;
           message: string list;
         }
-      | Internal of {
-          input: 'a;
-          message: string;
-        }
+      | Internal of {message: string}
 
-    let input (Syntax {input; _} | Internal {input; _}) = input
-
-    let map f = function
-      | Syntax se -> Syntax {se with input = f se.input}
-      | Internal ie -> Internal {ie with input = f ie.input}
-
-    let to_string ~input:f = function
-      | Syntax {input; line; char_range = (s, e); message} ->
-        Printf.sprintf "syntax error: %s:%d.%d-%d: %s"
-          (f input) line s e (String.concat "\\n" message)
-      | Internal {input; message} ->
-        Printf.sprintf "internal error: %s: %s" (f input) message
+    let to_string = function
+      | Syntax {line; char_range = (s, e); message} ->
+        Printf.sprintf "syntax error: line %d.%d-%d: %s"
+          line s e (String.concat "\\n" message)
+      | Internal {message} ->
+        Printf.sprintf "internal error: %s" message
   end
 
   module Output_parser = struct
@@ -83,7 +73,8 @@ module Ocamlformat = struct
              else message (line :: acc)
            in
            let message = message [] in
-           Error.Syntax {input; line; char_range; message})
+           (input, Error.Syntax {line; char_range; message})
+        )
 
     (* Error message shape 2:
 
@@ -105,23 +96,23 @@ module Ocamlformat = struct
        where bug apply
     *)
 
-    let error_message_3_part_1 buggy_input text ic =
+    let error_message_3_part_1 text ic =
       Scanf.sscanf_opt text
         {|ocamlformat: Cannot process %S.|}
         (fun input ->
            match input_line ic with
            | "  Please report this bug at https://github.com/ocaml-ppx/ocamlformat/issues." ->
-             buggy_input := input
+             input
            | line -> failwithf "driver: %s: unexpected error header: %s" input line
         )
 
-    let error_message_3_part_2 buggy_input text =
+    let error_message_3_part_2 text =
       let bug = "  BUG: " in
       if String.starts_with ~prefix:bug text then
         let bugl = String.length bug in
         let txtl = String.length text in
         let message = String.sub text bugl (txtl - bugl) in
-        Some (Error.Internal {input = !buggy_input; message})
+        Some (Error.Internal {message})
       else
         None
 
@@ -135,12 +126,13 @@ module Ocamlformat = struct
             match error_message_1 line ic with
             | Some _ as r -> r
             | None ->
-              match error_message_3_part_1 buggy_input line ic with
-              | Some () ->
+              match error_message_3_part_1 line ic with
+              | Some input ->
+                buggy_input := input;
                 None
               | None ->
-                match error_message_3_part_2 buggy_input line with
-                | Some _ as r -> r
+                match error_message_3_part_2 line with
+                | Some err -> Some (!buggy_input, err)
                 | None ->
                   match error_message_2 line with
                   | Some _path ->
@@ -166,10 +158,10 @@ module Ocamlformat = struct
 
     let rev_cleanup_errors answers =
       let rec loop acc = function
-        | Error.Internal {input; message = "comment changed."} :: rest -> (
+        | (input, Error.Internal {message = "comment changed."}) :: rest -> (
             match rest with
-            | Error.Syntax se :: _ when
-                se.input = input &&
+            | (input', Error.Syntax se) :: _ when
+                input = input' &&
                 String.starts_with ~prefix:"Error: comment (*"
                   (List.hd se.message)
               ->
@@ -177,7 +169,7 @@ module Ocamlformat = struct
             | _ ->
               let msg = match rest with
                 | [] -> "end of file"
-                | e :: _ -> Error.to_string ~input:Fun.id e
+                | (file, err) :: _ -> file ^ ": " ^ Error.to_string err
               in
               failwithf "driver: error: expecting error details after \
                          \"comment changed.\", got %s" msg
@@ -231,16 +223,12 @@ module Ocamlformat = struct
       List.iter Unix.unlink files;
       let errors = Output_parser.rev_cleanup_errors errors in
       let answer = Array.make (List.length files) [] in
-      List.iter (fun error ->
-          let input = Error.input error in
-          match temp_path_index input with
-          | Some index ->
-            let error = Error.map (fun _ -> ()) error in
-            answer.(index) <- error :: answer.(index)
-          | None ->
-            failwithf "driver: error: unexpected filename %S, \
-                       expecting ocamlgrammarfuzzer_%%06d.{ml,mli}" input
-        ) errors;
+      List.iter begin fun (input, error) ->
+        match temp_path_index input with
+        | Some index -> answer.(index) <- error :: answer.(index)
+        | None -> failwithf "driver: error: unexpected filename %S, \
+                             expecting ocamlgrammarfuzzer_%%06d.{ml,mli}" input
+      end errors;
       Array.to_seq answer
 
   let check seq =
@@ -261,12 +249,9 @@ let () =
   read_lines stdin
   |> Seq.map infer_kind
   |> Ocamlformat.check
-  |> Seq.iteri begin fun i -> function
-    | [] -> ()
-    | errors ->
-      let name = Printf.sprintf "sentence_%06d" i in
-      List.iter begin fun err ->
-        let input () = name in
-        prerr_endline (Ocamlformat.Error.to_string ~input err)
-      end errors
+  |> Seq.iteri begin fun i errors ->
+    List.iter begin fun error ->
+      Printf.printf "line %06d: %s\n"
+        i (Ocamlformat.Error.to_string error)
+    end errors
   end
