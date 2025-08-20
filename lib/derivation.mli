@@ -30,6 +30,9 @@ val shift : 'r cell index -> 'g terminal index -> ('g, 'r) t
 val node : 'r cell index -> ('g, 'r) t -> ('g, 'r) t -> ('g, 'r) t
 val expand : 'r cell index -> ('g, 'r) t -> 'g reduction -> ('g, 'r) t
 
+val get_terminal : ('g, 'r) t -> int -> 'g terminal index
+val get_cells_on_path_to_index : ('g, 'r) t -> int -> 'r cell index list
+
 val terminals : ('g, 'r) t -> 'g terminal index list
 val iter_terminals : f:('g terminal index -> unit) -> ('g, 'r) t -> unit
 

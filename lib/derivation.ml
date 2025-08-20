@@ -48,6 +48,41 @@ let node cell left right =
 let expand cell expansion reduction =
   Expand {cell; expansion; reduction}
 
+let rec get_terminal der i =
+  match der with
+  | Expand {expansion; _} -> get_terminal expansion i
+  | Null _ -> raise Not_found
+  | Shift {terminal; _} ->
+    if i > 0 then raise Not_found;
+    terminal
+  | Node {left; right; _} ->
+    let len = length left in
+    if i < len then
+      get_terminal left i
+    else
+      get_terminal right (i - len)
+
+let get_cells_on_path_to_index der i =
+  let rec loop acc der i =
+    let len = length der in
+    assert (i <= len);
+    let acc =
+      if i = 0 || i = len then
+        cell der :: acc
+      else acc
+    in
+    match der with
+    | Expand {expansion; _} -> loop acc expansion i
+    | Null _ | Shift _ -> acc
+    | Node {left; right; _} ->
+      let len = length left in
+      if i < len then
+        loop acc left i
+      else
+        loop acc right (i - len)
+  in
+  loop [] der i
+
 let terminals der =
   let rec loop acc = function
     | Null _ -> acc

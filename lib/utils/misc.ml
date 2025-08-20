@@ -316,6 +316,20 @@ let rec list_drop n = function
   | _ :: xs when n > 0 -> list_drop (n - 1) xs
   | xs -> xs
 
+let list_uniq ?(equal=(=)) = function
+  | [] -> []
+  | [x] -> [x]
+  | x :: xs ->
+    let rec loop acc x = function
+      | [] -> List.rev (x :: acc)
+      | y :: xs ->
+        if equal x y then
+          loop acc x xs
+        else
+          loop (x :: acc) y xs
+    in
+    loop [] x xs
+
 let rec fixpoint ?counter ~propagate todo = match !todo with
   | [] -> ()
   | todo' ->

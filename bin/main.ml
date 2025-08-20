@@ -15,6 +15,7 @@ let opt_weights = ref []
 let opt_avoid = ref []
 let opt_focus = ref []
 let opt_exhaust = ref false
+let opt_ocamlformat_check = ref false
 
 let spec_list = [
   (* ("-n"         , Arg.Set_int opt_count, "<int> Number of lines to generate"  ); *)
@@ -32,6 +33,7 @@ let spec_list = [
   ("--avoid", Arg.String (push opt_avoid), " Forbid grammatical constructions");
   ("--focus", Arg.String (push opt_focus), " Generate sentences stressing a grammatical construction");
   ("--exhaust", Arg.Set opt_exhaust, " Exhaust mode generates a deterministic set of sentences that cover all reachable constructions");
+  ("--ocamlformat-check", Arg.Set opt_ocamlformat_check, " Check generated sentences with ocamlformat (default is to print them)");
 ]
 
 let usage_msg = "Usage: ocamlgrammarfuzzer [options]"
@@ -482,20 +484,6 @@ let generate_sentence ?(length=100) ?from () =
   let cell = Reach.Cell.encode node ~pre:0 ~post:0 in
   fuzz length cell
 
-let output_with_comments oc =
-  let count = ref 0 in
-  fun t ->
-    if !count > 0 then output_char oc ' ';
-    Printf.fprintf oc "(* C%d *) %s" !count terminal_text.:(t);
-    incr count
-
-let directly_output oc =
-  let need_sep = ref false in
-  fun t ->
-    if !need_sep then output_char oc ' ';
-    need_sep := true;
-    output_string oc terminal_text.:(t)
-
 let derivations =
   let entrypoints =
     IndexSet.elements entrypoints
@@ -621,13 +609,106 @@ let derivations =
     in
     next_cell
 
-let () =
-  let output_terminal () =
-    if !opt_comments
-    then output_with_comments stdout
-    else directly_output stdout
+let report_invalid_entrypoint =
+  let reported = ref IndexSet.empty in
+  fun ep ->
+  if not (IndexSet.mem ep !reported) then (
+    reported := IndexSet.add ep !reported;
+    true
+  ) else
+    false
+
+let entrypoint_of_derivation der =
+    let node, _, _ = Reach.Cell.decode (Derivation.cell der) in
+    match Reach.Tree.split node with
+    | R _ -> assert false
+    | L tr -> Transition.symbol grammar tr
+
+let prepare_derivation_for_check ~with_comments der =
+  let buf = Buffer.create 31 in
+  let comments = ref 0 in
+  let add_comment () =
+    if Buffer.length buf > 0 then
+      Buffer.add_char buf ' ';
+    Printf.bprintf buf "(* C%d *)" !comments;
+    incr comments
   in
-  Seq.iter (fun der ->
+  let locations = ref [] in
+  let add_terminal terminal =
+    if with_comments then add_comment ();
+    let startp = match Buffer.length buf with
+      | 0 -> 0
+      | n -> Buffer.add_char buf ' '; (n + 1)
+    in
+    Buffer.add_string buf terminal_text.:(terminal);
+    let endp = Buffer.length buf in
+    push locations (startp, endp)
+  in
+  Derivation.iter_terminals ~f:add_terminal der;
+  if with_comments then add_comment ();
+  let locations =
+    Array.of_list (List.rev !locations)
+  in
+  let kind =
+    let entrypoint = entrypoint_of_derivation der in
+    match Symbol.name grammar entrypoint with
+    | "implementation" -> `Impl
+    | "interface" -> `Intf
+    | name ->
+      if report_invalid_entrypoint entrypoint then
+        Syntax.warn Lexing.dummy_pos
+          "ocamlformat-check: invalid entrypoint %s, \
+           only implementation and interface are supported"
+          name;
+      `Impl
+  in
+  (kind, locations, Buffer.contents buf)
+
+(*List.iteri begin fun j -> function
+          | Ocamlformat.Error.Internal {message} ->
+            Printf.eprintf "- error %d is internal: %s\n" j message
+          | Syntax {line; char_range = (startp,endp); message} ->
+            Printf.eprintf "- error %d is syntactic at line %d columns %d.%d:\n"
+              j line startp endp;
+            Printf.eprintf "    %s\n"
+              (String.concat "\\n" message);
+            let tok_loc (startp', _) = startp' >= startp in
+            match Array.find_index tok_loc locations with
+            | Some i ->
+              Printf.eprintf "  happens at terminal %s\n"
+                terminal_text.:(Derivation.get_terminal der i)
+            | None ->
+              Printf.eprintf "  happens at the end of the sentence\n"
+          end errors*)
+
+let find_error_token locations (startp, _ : int * int) =
+  let tok_loc (startp', _ : int * int) = startp' >= startp in
+  match Array.find_index tok_loc locations with
+  | Some i -> i
+  | None -> Array.length locations
+
+let () =
+  let output_with_comments oc =
+    let count = ref 0 in
+    fun t ->
+      if !count > 0 then output_char oc ' ';
+      Printf.fprintf oc "(* C%d *) %s" !count terminal_text.:(t);
+      incr count
+  in
+  let directly_output oc =
+    let need_sep = ref false in
+    fun t ->
+      if !need_sep then output_char oc ' ';
+      need_sep := true;
+      output_string oc terminal_text.:(t)
+  in
+  if not !opt_ocamlformat_check then (
+    let output_terminal () =
+      if !opt_comments
+      then output_with_comments stdout
+      else directly_output stdout
+    in
+    Seq.iter begin fun der ->
       if !opt_print_entrypoint then (
         let entrypoint =
           let node, _, _ = Reach.Cell.decode (Derivation.cell der) in
@@ -640,4 +721,75 @@ let () =
       );
       Derivation.iter_terminals ~f:(output_terminal ()) der;
       output_char stdout '\n'
-    ) derivations
+    end derivations
+  ) else (
+    let derivations = Array.of_seq derivations in
+    let count = Array.length derivations in
+    let sources =
+      Array.map (prepare_derivation_for_check ~with_comments:false) derivations
+    in
+    let outcome =
+      Array.to_seq sources
+      |> Seq.map (fun (k,_,s)  -> (k, s))
+      |> Ocamlformat.check
+      |> Array.of_seq
+    in
+    (* Classification.
+       Step 1: mark cells that are known to succeed.
+       -> They are less likely to cause error. *)
+    let safe_cells = Boolvector.make Reach.Cell.n false in
+    for i = 0 to count - 1 do
+      if List.is_empty outcome.(i) then
+        let rec mark_safe der =
+          Boolvector.set safe_cells (Derivation.cell der);
+          Derivation.iter_sub mark_safe der
+        in
+        mark_safe derivations.(i)
+    done;
+    (* Step 2: collect unsafe cells on path to syntax errors. *)
+    let errors_per_state = Vector.make (Lr0.cardinal grammar) [] in
+    let rec lr0_of_node node =
+      match Reach.Tree.split node with
+      | L tr -> Lr1.to_lr0 grammar (Transition.source grammar tr)
+      | R (_, r) -> lr0_of_node r
+    in
+    let lr0_of_cell cell =
+      let node, _, _ = Reach.Cell.decode cell in
+      lr0_of_node node
+    in
+    for i = 0 to count - 1 do
+      let _, locations, _ = sources.(i) in
+      List.iter begin function
+        | Ocamlformat.Error.Internal _ -> ()
+        | Syntax error as err ->
+          assert (error.line = 1);
+          let pos = find_error_token locations error.char_range in
+          let cells = Derivation.get_cells_on_path_to_index derivations.(i) pos in
+          let cells =
+            let is_unsafe cell = not (Boolvector.test safe_cells cell) in
+            match List.filter is_unsafe cells with
+            | [] -> [List.hd cells]
+            | unsafe_cells -> unsafe_cells
+          in
+          let lr0s = list_uniq ~equal:Index.equal (List.map lr0_of_cell cells) in
+          List.iter
+            (fun lr0 -> errors_per_state.@(lr0) <- List.cons (i, err))
+            lr0s
+      end outcome.(i)
+    done;
+    let by_errors =
+      Vector.fold_lefti
+        (fun acc lr0 errs ->
+           match List.length errs with
+           | 0 -> acc
+           | l -> (l, lr0) :: acc)
+        [] errors_per_state
+      |> List.sort (fun (a,_) (b,_) -> Int.compare b a)
+    in
+    List.iter (fun (count, lr0) ->
+        Printf.eprintf "%d errors in state:\n" count;
+        IndexSet.iter (fun item ->
+            Printf.eprintf "  %s\n" (Item.to_string grammar item)
+          ) (Lr0.items grammar lr0)
+      ) by_errors
+  )
