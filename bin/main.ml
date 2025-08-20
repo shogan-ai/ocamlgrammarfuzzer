@@ -496,32 +496,22 @@ let directly_output oc =
     need_sep := true;
     output_string oc terminal_text.:(t)
 
-let () =
-  let output_terminal () =
-    if !opt_comments
-    then output_with_comments stdout
-    else directly_output stdout
-  in
+let derivations =
   let entrypoints =
     IndexSet.elements entrypoints
     |> List.map (fun tr -> tr, 1.0)
   in
-  try
-    match List.rev !opt_focus with
-    | [] when not !opt_exhaust ->
-      for _ = 0 to !opt_count - 1 do
-        let derivation =
-          generate_sentence
-            ~from:(sample_list entrypoints)
-            ~length:!opt_length ()
-        in
-        Derivation.iter_terminals derivation
-          ~f:(output_terminal ());
-        output_char stdout '\n'
-      done
-    | focus ->
-      let todo = Boolvector.make Reach.Cell.n !opt_exhaust in
-      if not !opt_exhaust then (
+  match List.rev !opt_focus with
+  | [] when not !opt_exhaust ->
+    Seq.init !opt_count (fun _ ->
+        generate_sentence
+          ~from:(sample_list entrypoints)
+          ~length:!opt_length ()
+      )
+  | focus ->
+    let todo = Boolvector.make Reach.Cell.n !opt_exhaust in
+    if not !opt_exhaust then (
+      try
         let focused_sym = Boolvector.make (Symbol.cardinal grammar) false in
         let focused_prods = Boolvector.make (Production.cardinal grammar) false in
         let focused_items = Vector.make (Production.cardinal grammar) IntSet.empty in
@@ -573,71 +563,81 @@ let () =
                   ) : int)
             end eqns.non_nullable;
           );
-      );
-      let rec mark_derivation der =
-        Boolvector.clear todo (Derivation.cell der);
-        Derivation.iter_sub mark_derivation der
+      with
+      | Error (pos, msg) ->
+        Syntax.error pos "%s." msg
+      | Transl.Unknown_symbol (pos, name) ->
+        let candidates = ref [] in
+        let cache = Damerau_levenshtein.make_cache () in
+        Index.iter (Symbol.cardinal grammar) begin fun sym ->
+          let name' = Symbol.name grammar sym in
+          let dist = Damerau_levenshtein.distance cache name name' in
+          if dist <= 7 then
+            push candidates (dist, name')
+        end;
+        match
+          List.sort (compare_fst Int.compare) !candidates
+          |> List.take 10
+          |> List.rev_map snd
+        with
+        | [] -> Syntax.error pos "unknown symbol %s." name
+        | [x] -> Syntax.error pos "unknown symbol %s.\nDid you mean %s?" name x
+        | x :: xs ->
+          Syntax.error pos "unknown symbol %s.\nDid you mean %s?" name
+            (String.concat ", " (List.rev (("or " ^ x) :: xs)))
+    );
+    let rec mark_derivation der =
+      Boolvector.clear todo (Derivation.cell der);
+      Derivation.iter_sub mark_derivation der
+    in
+    let gen_cell length cell =
+      let der =
+        if !opt_exhaust
+        then min_sentence cell
+        else fuzz length cell
       in
-      let gen_cell length cell =
-        let der =
-          if !opt_exhaust
-          then min_sentence cell
-          else fuzz length cell
+      mark_derivation der;
+      der
+    in
+    let enum = Index.enumerate Reach.Cell.n in
+    let rec next_cell () =
+      match enum () with
+      | exception Index.End_of_set -> Seq.Nil
+      | cell when Reach.Analysis.cost cell = max_int (* empty language *) ||
+                  not (Boolvector.test todo cell) ||
+                  List.is_empty bfs.:(cell) (* unreachable from entrypoint *)
+        -> next_cell ()
+      | cell ->
+        let length = ref !opt_length in
+        let gen_path_component cell =
+          let der = gen_cell 0 cell in
+          length := !length - Derivation.length der;
+          der
         in
-        mark_derivation der;
-        der
-      in
-      Index.iter Reach.Cell.n begin fun cell ->
-        if Reach.Analysis.cost cell < max_int && Boolvector.test todo cell then (
-          match bfs.:(cell) with
-          | [] -> () (* Unreachable *)
-          | path ->
-            let length = ref !opt_length in
-            let gen_path_component cell =
-              let der = gen_cell 0 cell in
-              length := !length - Derivation.length der;
-              der
-            in
-            let path = List.map (Derivation.map_path gen_path_component) path in
-            let der = gen_cell !length cell in
-            let der = List.fold_left Derivation.unroll_path der path in
-            if !opt_print_entrypoint then (
-              let entrypoint =
-                match List.fold_left (fun _ p -> p) (List.hd path) path with
-                | In_expansion {cell; _} ->
-                  let node, _, _ = Reach.Cell.decode cell in
-                  begin match Reach.Tree.split node with
-                    | R _ -> assert false
-                    | L tr -> Transition.symbol grammar tr
-                  end
-                | _ -> assert false
-              in
-              output_string stdout (Symbol.name grammar entrypoint);
-              output_string stdout ": ";
-            );
-            Derivation.iter_terminals ~f:(output_terminal ()) der;
-            output_char stdout '\n'
-        )
-      end
-  with
-  | Error (pos, msg) ->
-    Syntax.error pos "%s." msg
-  | Transl.Unknown_symbol (pos, name) ->
-    let candidates = ref [] in
-    let cache = Damerau_levenshtein.make_cache () in
-    Index.iter (Symbol.cardinal grammar) begin fun sym ->
-      let name' = Symbol.name grammar sym in
-      let dist = Damerau_levenshtein.distance cache name name' in
-      if dist <= 7 then
-        push candidates (dist, name')
-    end;
-    match
-      List.sort (compare_fst Int.compare) !candidates
-      |> List.take 10
-      |> List.rev_map snd
-    with
-    | [] -> Syntax.error pos "unknown symbol %s." name
-    | [x] -> Syntax.error pos "unknown symbol %s.\nDid you mean %s?" name x
-    | x :: xs ->
-      Syntax.error pos "unknown symbol %s.\nDid you mean %s?" name
-        (String.concat ", " (List.rev (("or " ^ x) :: xs)))
+        let path = List.map (Derivation.map_path gen_path_component) bfs.:(cell) in
+        let leaf = gen_cell !length cell in
+        let der = List.fold_left Derivation.unroll_path leaf path in
+        Seq.Cons (der, next_cell)
+    in
+    next_cell
+
+let () =
+  let output_terminal () =
+    if !opt_comments
+    then output_with_comments stdout
+    else directly_output stdout
+  in
+  Seq.iter (fun der ->
+      if !opt_print_entrypoint then (
+        let entrypoint =
+          let node, _, _ = Reach.Cell.decode (Derivation.cell der) in
+          match Reach.Tree.split node with
+          | R _ -> assert false
+          | L tr -> Transition.symbol grammar tr
+        in
+        output_string stdout (Symbol.name grammar entrypoint);
+        output_string stdout ": ";
+      );
+      Derivation.iter_terminals ~f:(output_terminal ()) der;
+      output_char stdout '\n'
+    ) derivations
