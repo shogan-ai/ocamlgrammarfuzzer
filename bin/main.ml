@@ -221,50 +221,109 @@ let iter_eqns ~f i_pre i_post goto =
           f reduction (Reach.Cell.encode node' ~pre:i_pre' ~post:i_post')
   end eqns.non_nullable
 
-type derivation =
-  | Null of {
-      cell: Reach.Cell.n index;
-    }
-  | Shift of {
-      cell: Reach.Cell.n index;
-      terminal: g terminal index;
-    }
-  | Node of {
-      cell: Reach.Cell.n index;
-      left: derivation;
-      right: derivation;
-      length: int;
-    }
-  | Expand of {
-      cell: Reach.Cell.n index;
-      expansion: derivation;
-      reduction: g Reachability.reduction;
-    }
+module Derivation = struct
+  type ('g, 'r) t =
+    | Null of {
+        cell: 'r Reachability.cell index;
+      }
+    | Shift of {
+        cell: 'r Reachability.cell index;
+        terminal: 'g terminal index;
+      }
+    | Node of {
+        cell: 'r Reachability.cell index;
+        left: ('g, 'r) t;
+        right: ('g, 'r) t;
+        length: int;
+      }
+    | Expand of {
+        cell: 'r Reachability.cell index;
+        expansion: ('g, 'r) t;
+        reduction: 'g Reachability.reduction;
+      }
 
-let derivation_cell ( Null {cell} | Shift {cell; _}
-                    | Node {cell; _} | Expand {cell; _}) =
-  cell
+  let cell ( Null {cell} | Shift {cell; _}
+           | Node {cell; _} | Expand {cell; _} ) =
+    cell
 
-let rec derivation_length = function
-  | Null _ -> 0
-  | Shift _ -> 1
-  | Node {length; _} -> length
-  | Expand {expansion; _} -> derivation_length expansion
+  let rec length = function
+    | Null _ -> 0
+    | Shift _ -> 1
+    | Node {length; _} -> length
+    | Expand {expansion; _} -> length expansion
 
-let derivation_iter_sub f = function
-  | Null _ | Shift _ -> ()
-  | Node {left; right; _} -> f left; f right
-  | Expand {expansion; _} -> f expansion
+  let iter_sub f = function
+    | Null _ | Shift _ -> ()
+    | Node {left; right; _} -> f left; f right
+    | Expand {expansion; _} -> f expansion
 
-let derivation_node cell left right =
-  let length = derivation_length left + derivation_length right in
-  Node {cell; left; right; length}
+  let null cell = Null {cell}
 
-exception Derivation_found of derivation
+  let shift cell terminal =
+    Shift {cell; terminal}
+
+  let node cell left right =
+    let length = length left + length right in
+    Node {cell; left; right; length}
+
+  let expand cell expansion reduction =
+    Expand {cell; expansion; reduction}
+
+  let terminals der =
+    let rec loop acc = function
+      | Null _ -> acc
+      | Shift  {terminal; _} -> terminal :: acc
+      | Node   {left; right; _} -> loop (loop acc right) left
+      | Expand {expansion; _} -> loop acc expansion
+    in
+    loop [] der
+
+  let rec iter_terminals ~f = function
+    | Null _ -> ()
+    | Shift  {terminal; _} -> f terminal
+    | Node   {left; right; _} ->
+      iter_terminals ~f left;
+      iter_terminals ~f right
+    | Expand {expansion; _} ->
+      iter_terminals ~f expansion
+
+  type ('g, 'r, 'a) path =
+    | Left_of of {
+        right: 'a;
+        cell: 'r Reachability.cell index;
+      }
+    | Right_of of {
+        left: 'a;
+        cell: 'r Reachability.cell index;
+      }
+    | In_expansion of {
+        reduction: 'g Reachability.reduction;
+        cell: 'r Reachability.cell index;
+      }
+
+  let map_path f = function
+    | Left_of {right; cell} ->
+      let right = f right in
+      Left_of {right; cell}
+    | Right_of {left; cell} ->
+      let left = f left in
+      Right_of {left; cell}
+    | In_expansion _ as x -> x
+
+  let unroll_path der = function
+    | Left_of {right; cell} ->
+      node cell der right
+    | Right_of {left; cell} ->
+      node cell left der
+    | In_expansion {reduction; cell} ->
+      Expand {expansion = der; reduction; cell}
+end
+
+exception Derivation_found of (g, Reach.r) Derivation.t
 
 let min_sentence =
   let solve = lazy (
-    let sentinel = Null {cell = Index.of_int Reach.Cell.n 0} in
+    let sentinel = Derivation.Null {cell = Index.of_int Reach.Cell.n 0} in
     let table = Vector.make Reach.Cell.n sentinel in
     let rec solve cell =
       match table.:(cell) with
@@ -275,7 +334,7 @@ let min_sentence =
           failwith "min_sentence: unreachable cell";
         let result =
           if cost = 0 then
-            Null {cell}
+            Derivation.null cell
           else
             let node, i_pre, i_post = Reach.Cell.decode cell in
             try
@@ -288,7 +347,7 @@ let min_sentence =
                       if l_cost < max_int && r_cost < max_int &&
                          l_cost + r_cost = cost then
                         let der =
-                          derivation_node cell (solve cl) (solve cr)
+                          Derivation.node cell (solve cl) (solve cr)
                         in
                         raise (Derivation_found der)
                   );
@@ -299,14 +358,14 @@ let min_sentence =
                   assert (cost = 1);
                   (* We reached a shift transition *)
                   let terminal = Transition.shift_symbol grammar shift in
-                  Shift {cell; terminal}
+                  Derivation.shift cell terminal
                 | L goto ->
-                  iter_eqns i_pre i_post goto ~f:(fun reduction cell ->
-                      if Reach.Analysis.cost cell = cost then
-                        let expansion = solve cell in
-                        let der = Expand {cell; reduction; expansion} in
-                        raise (Derivation_found der)
-                    );
+                  iter_eqns i_pre i_post goto ~f:begin fun reduction cell ->
+                    if Reach.Analysis.cost cell = cost then
+                      let expansion = solve cell in
+                      let der = Derivation.expand cell expansion reduction in
+                      raise (Derivation_found der)
+                  end;
                   assert false
             with Derivation_found der -> der
         in
@@ -367,8 +426,8 @@ let rec fuzz size0 cell =
        - generate left side targetting the split position
        - compensate on right side if left side missed expectation
     *)
-    let right = fuzz (size - derivation_length left) cr in
-    derivation_node cell left right
+    let right = fuzz (size - Derivation.length left) cr in
+    Derivation.node cell left right
   | L tr ->
     match Transition.split grammar tr with
     | R shift ->
@@ -467,14 +526,6 @@ let entrypoints =
         (String.concat ", " entrypoints)
         (string_concat_map ", " snd candidates)
 
-type 'a zipper_path =
-  | Left_of of {right: 'a; cell: Reach.Cell.n index}
-  | Right_of of {left: 'a; cell: Reach.Cell.n index}
-  | In_expansion of {
-      reduction: g Reachability.reduction;
-      cell: Reach.Cell.n index;
-    }
-
 let bfs = Vector.make Reach.Cell.n []
 
 let () =
@@ -494,8 +545,8 @@ let () =
     | R (l, r) ->
       iter_sub_nodes ~f:(fun left right ->
           if reachable left && reachable right then (
-            visit (Left_of {right; cell} :: path) left;
-            visit (Right_of {left; cell} :: path) right;
+            visit (Derivation.Left_of {right; cell} :: path) left;
+            visit (Derivation.Right_of {left; cell} :: path) right;
           )
         ) i_pre i_post l r
     | L tr ->
@@ -518,24 +569,6 @@ let () =
 (* Check we know how to print each terminal *)
 
 let terminal_text = Token_printer.for_grammar grammar []
-
-let _terminals_of_derivation der =
-  let rec loop acc = function
-    | Null _ -> acc
-    | Shift  {terminal; _} -> terminal :: acc
-    | Node   {left; right; _} -> loop (loop acc right) left
-    | Expand {expansion; _} -> loop acc expansion
-  in
-  loop [] der
-
-let rec iter_terminals_of_derivation ~f = function
-  | Null _ -> ()
-  | Shift  {terminal; _} -> f terminal
-  | Node   {left; right; _} ->
-    iter_terminals_of_derivation ~f left;
-    iter_terminals_of_derivation ~f right
-  | Expand {expansion; _} ->
-    iter_terminals_of_derivation ~f expansion
 
 let generate_sentence ?(length=100) ?from () =
   let tr = match from with
@@ -582,7 +615,8 @@ let () =
             ~from:(sample_list entrypoints)
             ~length:!opt_length ()
         in
-        iter_terminals_of_derivation derivation ~f:(output_terminal ());
+        Derivation.iter_terminals derivation
+          ~f:(output_terminal ());
         output_char stdout '\n'
       done
     | focus ->
@@ -641,8 +675,8 @@ let () =
           );
       );
       let rec mark_derivation der =
-        Boolvector.clear todo (derivation_cell der);
-        derivation_iter_sub mark_derivation der
+        Boolvector.clear todo (Derivation.cell der);
+        Derivation.iter_sub mark_derivation der
       in
       let gen_cell length cell =
         let der =
@@ -653,64 +687,50 @@ let () =
         mark_derivation der;
         der
       in
-      let unroll_path der = function
-        | Left_of {right; cell} ->
-          derivation_node cell der right
-        | Right_of {left; cell} ->
-          derivation_node cell left der
-        | In_expansion {reduction; cell} ->
-          Expand {expansion = der; reduction; cell}
-      in
-      Index.iter Reach.Cell.n (fun cell ->
-          if Reach.Analysis.cost cell < max_int && Boolvector.test todo cell then (
-            match bfs.:(cell) with
-            | [] -> () (* Unreachable *)
-            | path ->
-              let length = ref !opt_length in
-              let path = List.map (function
-                  | Left_of {right; cell} ->
-                    let right = gen_cell 0 right in
-                    length := !length - derivation_length right;
-                    Left_of {right; cell}
-                  | Right_of {left; cell} ->
-                    let left = gen_cell 0 left in
-                    length := !length - derivation_length left;
-                    Right_of {left; cell}
-                  | In_expansion _ as x -> x
-                ) path
+      Index.iter Reach.Cell.n begin fun cell ->
+        if Reach.Analysis.cost cell < max_int && Boolvector.test todo cell then (
+          match bfs.:(cell) with
+          | [] -> () (* Unreachable *)
+          | path ->
+            let length = ref !opt_length in
+            let gen_path_component cell =
+              let der = gen_cell 0 cell in
+              length := !length - Derivation.length der;
+              der
+            in
+            let path = List.map (Derivation.map_path gen_path_component) path in
+            let der = gen_cell !length cell in
+            let der = List.fold_left Derivation.unroll_path der path in
+            if !opt_print_entrypoint then (
+              let entrypoint =
+                match List.fold_left (fun _ p -> p) (List.hd path) path with
+                | In_expansion {cell; _} ->
+                  let node, _, _ = Reach.Cell.decode cell in
+                  begin match Reach.Tree.split node with
+                    | R _ -> assert false
+                    | L tr -> Transition.symbol grammar tr
+                  end
+                | _ -> assert false
               in
-              let der = gen_cell !length cell in
-              let der = List.fold_left unroll_path der path in
-              if !opt_print_entrypoint then (
-                let entrypoint =
-                  match List.fold_left (fun _ p -> p) (List.hd path) path with
-                  | In_expansion {cell; _} ->
-                    let node, _, _ = Reach.Cell.decode cell in
-                    begin match Reach.Tree.split node with
-                      | R _ -> assert false
-                      | L tr -> Transition.symbol grammar tr
-                    end
-                  | _ -> assert false
-                in
-                output_string stdout (Symbol.name grammar entrypoint);
-                output_string stdout ": ";
-              );
-              iter_terminals_of_derivation ~f:(output_terminal ()) der;
-              output_char stdout '\n'
-          )
+              output_string stdout (Symbol.name grammar entrypoint);
+              output_string stdout ": ";
+            );
+            Derivation.iter_terminals ~f:(output_terminal ()) der;
+            output_char stdout '\n'
         )
+      end
   with
   | Error (pos, msg) ->
     Syntax.error pos "%s." msg
   | Transl.Unknown_symbol (pos, name) ->
     let candidates = ref [] in
     let cache = Damerau_levenshtein.make_cache () in
-    Index.iter (Symbol.cardinal grammar) (fun sym ->
-        let name' = Symbol.name grammar sym in
-        let dist = Damerau_levenshtein.distance cache name name' in
-        if dist <= 7 then
-          push candidates (dist, name')
-      );
+    Index.iter (Symbol.cardinal grammar) begin fun sym ->
+      let name' = Symbol.name grammar sym in
+      let dist = Damerau_levenshtein.distance cache name name' in
+      if dist <= 7 then
+        push candidates (dist, name')
+    end;
     match
       List.sort (compare_fst Int.compare) !candidates
       |> List.take 10
