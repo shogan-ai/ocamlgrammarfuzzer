@@ -1,58 +1,53 @@
 open Fix.Indexing
 open Info
 
-type ('g, 'r) t =
-  | Null of {
-      cell: 'r Reachability.cell index;
-    }
-  | Shift of {
-      cell: 'r Reachability.cell index;
-      terminal: 'g terminal index;
-    }
+type ('g, 'r, 'a) t = {
+  cell: 'a;
+  desc: ('g, 'r, 'a) desc;
+}
+and ('g, 'r, 'a) desc =
+  | Null
+  | Shift of 'g terminal index
   | Node of {
-      cell: 'r Reachability.cell index;
-      left: ('g, 'r) t;
-      right: ('g, 'r) t;
+      left: ('g, 'r, 'a) t;
+      right: ('g, 'r, 'a) t;
       length: int;
     }
   | Expand of {
-      cell: 'r Reachability.cell index;
-      expansion: ('g, 'r) t;
+      expansion: ('g, 'r, 'a) t;
       reduction: 'g Reachability.reduction;
     }
 
-let cell ( Null {cell} | Shift {cell; _}
-         | Node {cell; _} | Expand {cell; _} ) =
-  cell
+let cell t = t.cell
 
-let rec length = function
-  | Null _ -> 0
+let rec length t = match t.desc with
+  | Null -> 0
   | Shift _ -> 1
   | Node {length; _} -> length
   | Expand {expansion; _} -> length expansion
 
-let iter_sub f = function
-  | Null _ | Shift _ -> ()
+let iter_sub f t = match t.desc with
+  | Null | Shift _ -> ()
   | Node {left; right; _} -> f left; f right
   | Expand {expansion; _} -> f expansion
 
-let null cell = Null {cell}
+let null cell = {cell; desc = Null}
 
 let shift cell terminal =
-  Shift {cell; terminal}
+  {cell; desc = Shift terminal}
 
 let node cell left right =
   let length = length left + length right in
-  Node {cell; left; right; length}
+  {cell; desc = Node {left; right; length}}
 
 let expand cell expansion reduction =
-  Expand {cell; expansion; reduction}
+  {cell; desc = Expand {expansion; reduction}}
 
-let rec get_terminal der i =
-  match der with
+let rec get_terminal t i =
+  match t.desc with
   | Expand {expansion; _} -> get_terminal expansion i
-  | Null _ -> raise Not_found
-  | Shift {terminal; _} ->
+  | Null -> raise Not_found
+  | Shift terminal ->
     if i > 0 then raise Not_found;
     terminal
   | Node {left; right; _} ->
@@ -62,18 +57,18 @@ let rec get_terminal der i =
     else
       get_terminal right (i - len)
 
-let get_cells_on_path_to_index der i =
-  let rec loop acc der i =
-    let len = length der in
+let get_cells_on_path_to_index t i =
+  let rec loop acc t i =
+    let len = length t in
     assert (i <= len);
     let acc =
       if i = 0 || i = len then
-        cell der :: acc
+        t.cell :: acc
       else acc
     in
-    match der with
+    match t.desc with
     | Expand {expansion; _} -> loop acc expansion i
-    | Null _ | Shift _ -> acc
+    | Null | Shift _ -> acc
     | Node {left; right; _} ->
       let len = length left in
       if i < len then
@@ -81,21 +76,23 @@ let get_cells_on_path_to_index der i =
       else
         loop acc right (i - len)
   in
-  loop [] der i
+  loop [] t i
 
 let terminals der =
-  let rec loop acc = function
-    | Null _ -> acc
-    | Shift  {terminal; _} -> terminal :: acc
-    | Node   {left; right; _} -> loop (loop acc right) left
+  let rec loop acc t =
+    match t.desc with
+    | Null -> acc
+    | Shift terminal -> terminal :: acc
+    | Node  {left; right; _} -> loop (loop acc right) left
     | Expand {expansion; _} -> loop acc expansion
   in
   loop [] der
 
-let rec iter_terminals ~f = function
-  | Null _ -> ()
-  | Shift  {terminal; _} -> f terminal
-  | Node   {left; right; _} ->
+let rec iter_terminals ~f t =
+  match t.desc with
+  | Null -> ()
+  | Shift terminal -> f terminal
+  | Node {left; right; _} ->
     iter_terminals ~f left;
     iter_terminals ~f right
   | Expand {expansion; _} ->
@@ -130,4 +127,20 @@ let unroll_path der = function
   | Right_of {left; cell} ->
     node cell left der
   | In_expansion {reduction; cell} ->
-    Expand {expansion = der; reduction; cell}
+    expand cell der reduction
+
+let items_of_expansion g ~expansion ~reduction =
+  let rec aux prod pos t =
+    let cell = Item.make g prod pos in
+    match t.desc with
+    | Null | Shift _ as desc ->
+      pos + 1, {cell; desc}
+    | Node n ->
+      let pos, left = aux prod pos n.left in
+      let pos, right = aux prod pos n.right in
+      pos, {cell; desc = Node {n with left; right}}
+    | Expand e ->
+      let _, expansion = aux e.reduction.production 0 e.expansion in
+      pos + 1, {cell; desc = Expand {e with expansion}}
+  in
+  snd (aux reduction.Reachability.production 0 expansion)

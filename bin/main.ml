@@ -223,7 +223,7 @@ let iter_eqns ~f i_pre i_post goto =
           f reduction (Reach.Cell.encode node' ~pre:i_pre' ~post:i_post')
   end eqns.non_nullable
 
-exception Derivation_found of (g, Reach.r) Derivation.t
+exception Derivation_found of (g, Reach.r, Reach.r Reachability.cell index) Derivation.t
 
 let min_sentence =
   let solve = lazy (
