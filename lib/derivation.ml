@@ -130,17 +130,20 @@ let unroll_path der = function
     expand cell der reduction
 
 let items_of_expansion g ~expansion ~reduction =
-  let rec aux prod pos t =
-    let cell = (t.cell, Item.make g prod pos) in
+  let rec aux parent prod pos t =
+    let item = if pos = 0 then parent else Item.make g prod pos in
+    let cell = (t.cell, item) in
     match t.desc with
     | Null | Shift _ as desc ->
       pos + 1, {cell; desc}
     | Node n ->
-      let pos, left = aux prod pos n.left in
-      let pos, right = aux prod pos n.right in
+      let pos, left = aux parent prod pos n.left in
+      let pos, right = aux parent prod pos n.right in
       pos, {cell; desc = Node {n with left; right}}
     | Expand e ->
-      let _, expansion = aux e.reduction.production 0 e.expansion in
+      let _, expansion = aux item e.reduction.production 0 e.expansion in
       pos + 1, {cell; desc = Expand {e with expansion}}
   in
-  snd (aux reduction.Reachability.production 0 expansion)
+  let {Reachability.production; _} = reduction in
+  let _ , der = aux (Item.make g production 0) production 0 expansion in
+  der

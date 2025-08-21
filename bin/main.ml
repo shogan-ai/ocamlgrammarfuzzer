@@ -764,13 +764,13 @@ let () =
               match List.filter is_unsafe cells with
               | [] -> [List.hd cells]
               | unsafe_cells -> unsafe_cells
-              in
-            let cells =
+            in
+            (*let cells =
               let is_non_zero (_, item) = Item.position grammar item > 0 in
               match List.filter is_non_zero cells with
               | [] -> [List.hd cells]
               | cells' -> cells'
-            in
+              in*)
             let items = list_uniq ~equal:Index.equal (List.map snd cells) in
             List.iter
               (fun lr0 -> errors_per_item.@(lr0) <- List.cons (i, err))
