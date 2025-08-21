@@ -29,9 +29,9 @@ val expand : 'a -> ('g, 'r, 'a) t -> 'g reduction -> ('g, 'r, 'a) t
 
 val items_of_expansion :
   'g grammar ->
-  expansion:('g, 'r, _) t ->
+  expansion:('g, 'r, 'a) t ->
   reduction:'g reduction ->
-  ('g, 'r, 'g item index) t
+  ('g, 'r, 'a * 'g item index) t
 
 val get_terminal : ('g, 'r, 'a) t -> int -> 'g terminal index
 val get_cells_on_path_to_index : ('g, 'r, 'a) t -> int -> 'a list

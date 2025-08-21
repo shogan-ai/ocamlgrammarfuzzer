@@ -747,16 +747,7 @@ let () =
         mark_safe derivations.(i)
     done;
     (* Step 2: collect unsafe cells on path to syntax errors. *)
-    let errors_per_state = Vector.make (Lr0.cardinal grammar) [] in
-    let rec lr0_of_node node =
-      match Reach.Tree.split node with
-      | L tr -> Lr1.to_lr0 grammar (Transition.source grammar tr)
-      | R (_, r) -> lr0_of_node r
-    in
-    let lr0_of_cell cell =
-      let node, _, _ = Reach.Cell.decode cell in
-      lr0_of_node node
-    in
+    let errors_per_item = Vector.make (Item.cardinal grammar) [] in
     for i = 0 to count - 1 do
       let _, locations, _ = sources.(i) in
       List.iter begin function
@@ -764,17 +755,27 @@ let () =
         | Syntax error as err ->
           assert (error.line = 1);
           let pos = find_error_token locations error.char_range in
-          let cells = Derivation.get_cells_on_path_to_index derivations.(i) pos in
-          let cells =
-            let is_unsafe cell = not (Boolvector.test safe_cells cell) in
-            match List.filter is_unsafe cells with
-            | [] -> [List.hd cells]
-            | unsafe_cells -> unsafe_cells
-          in
-          let lr0s = list_uniq ~equal:Index.equal (List.map lr0_of_cell cells) in
-          List.iter
-            (fun lr0 -> errors_per_state.@(lr0) <- List.cons (i, err))
-            lr0s
+          match derivations.(i).desc with
+          | Expand {expansion; reduction} ->
+            let der = Derivation.items_of_expansion grammar ~expansion ~reduction in
+            let cells = Derivation.get_cells_on_path_to_index der pos in
+            let cells =
+              let is_unsafe (cell, _) = not (Boolvector.test safe_cells cell) in
+              match List.filter is_unsafe cells with
+              | [] -> [List.hd cells]
+              | unsafe_cells -> unsafe_cells
+              in
+            let cells =
+              let is_non_zero (_, item) = Item.position grammar item > 0 in
+              match List.filter is_non_zero cells with
+              | [] -> [List.hd cells]
+              | cells' -> cells'
+            in
+            let items = list_uniq ~equal:Index.equal (List.map snd cells) in
+            List.iter
+              (fun lr0 -> errors_per_item.@(lr0) <- List.cons (i, err))
+              items
+          | _ -> assert false
       end outcome.(i)
     done;
     let by_errors =
@@ -783,13 +784,10 @@ let () =
            match List.length errs with
            | 0 -> acc
            | l -> (l, lr0) :: acc)
-        [] errors_per_state
+        [] errors_per_item
       |> List.sort (fun (a,_) (b,_) -> Int.compare b a)
     in
-    List.iter (fun (count, lr0) ->
-        Printf.eprintf "%d errors in state:\n" count;
-        IndexSet.iter (fun item ->
-            Printf.eprintf "  %s\n" (Item.to_string grammar item)
-          ) (Lr0.items grammar lr0)
+    List.iter (fun (count, item) ->
+        Printf.eprintf "%d errors in %s\n" count (Item.to_string grammar item);
       ) by_errors
   )
