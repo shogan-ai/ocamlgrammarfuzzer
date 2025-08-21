@@ -731,7 +731,7 @@ let () =
     let outcome =
       Array.to_seq sources
       |> Seq.map (fun (k,_,s)  -> (k, s))
-      |> Ocamlformat.check
+      |> Ocamlformat.check ~jobs:8
       |> Array.of_seq
     in
     (* Classification.

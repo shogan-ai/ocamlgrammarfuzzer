@@ -9,4 +9,4 @@ module Error : sig
   val to_string : t -> string
 end
 
-val check : ([`Impl | `Intf] * string) Seq.t -> Error.t list Seq.t
+val check : ?jobs:int -> ([`Impl | `Intf] * string) Seq.t -> Error.t list Seq.t
