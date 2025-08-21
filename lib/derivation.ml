@@ -131,8 +131,8 @@ let unroll_path der = function
 
 let items_of_expansion g ~expansion ~reduction =
   let rec aux parent prod pos t =
-    let item = if pos = 0 then parent else Item.make g prod pos in
-    let cell = (t.cell, item) in
+    let item = Item.make g prod pos in
+    let cell = if pos = 0 then (t.cell, parent, item) else (t.cell, item, item) in
     match t.desc with
     | Null | Shift _ as desc ->
       pos + 1, {cell; desc}

@@ -747,7 +747,7 @@ let () =
         mark_safe derivations.(i)
     done;
     (* Step 2: collect unsafe cells on path to syntax errors. *)
-    let errors_per_item = Vector.make (Item.cardinal grammar) [] in
+    let class_table = Hashtbl.create 7 in
     for i = 0 to count - 1 do
       let _, locations, _ = sources.(i) in
       List.iter begin function
@@ -760,34 +760,39 @@ let () =
             let der = Derivation.items_of_expansion grammar ~expansion ~reduction in
             let cells = Derivation.get_cells_on_path_to_index der pos in
             let cells =
-              let is_unsafe (cell, _) = not (Boolvector.test safe_cells cell) in
+              let is_unsafe (cell, _, _) = not (Boolvector.test safe_cells cell) in
               match List.filter is_unsafe cells with
               | [] -> [List.hd cells]
               | unsafe_cells -> unsafe_cells
             in
-            (*let cells =
-              let is_non_zero (_, item) = Item.position grammar item > 0 in
-              match List.filter is_non_zero cells with
-              | [] -> [List.hd cells]
-              | cells' -> cells'
-              in*)
-            let items = list_uniq ~equal:Index.equal (List.map snd cells) in
-            List.iter
-              (fun lr0 -> errors_per_item.@(lr0) <- List.cons (i, err))
-              items
+            let items = list_uniq ~equal:(=) (List.map (fun (_,x,y) -> (x,y)) cells) in
+            List.iter (fun key ->
+                let r = match Hashtbl.find_opt class_table key with
+                  | Some r -> r
+                  | None -> let r = ref [] in Hashtbl.add class_table key r; r
+                in
+                r := (i, err) :: !r
+              ) items
           | _ -> assert false
       end outcome.(i)
     done;
     let by_errors =
-      Vector.fold_lefti
-        (fun acc lr0 errs ->
-           match List.length errs with
+      Hashtbl.fold
+        (fun key errs acc ->
+           match List.length !errs with
            | 0 -> acc
-           | l -> (l, lr0) :: acc)
-        [] errors_per_item
+           | l -> (l, key) :: acc)
+        class_table []
       |> List.sort (fun (a,_) (b,_) -> Int.compare b a)
     in
-    List.iter (fun (count, item) ->
-        Printf.eprintf "%d errors in %s\n" count (Item.to_string grammar item);
+    List.iter (fun (count, (item, item')) ->
+        if item = item' then
+          Printf.eprintf "%d errors in\n  %s\n"
+            count (Item.to_string grammar item)
+        else
+          Printf.eprintf "%d errors in\n  %s\n    %s\n"
+            count
+            (Item.to_string grammar item)
+            (Item.to_string grammar item');
       ) by_errors
   )
