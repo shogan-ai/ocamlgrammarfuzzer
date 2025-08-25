@@ -782,6 +782,114 @@ type 'a error = {
   error: 'a;
 }
 
+(* Some messages contain a comment.
+   They are noise when trying to classify problems, so let's remove them. *)
+
+let cleanup_comment str =
+  let l = String.length str in
+  let b = Buffer.create l in
+  let i = ref 0 in
+  while !i < l - 6 do
+    let i0 = !i in
+    let c = str.[i0] in
+    if c = '(' && str.[i0 + 1] = '*' then (
+      i := i0 + 2;
+
+      while !i < l - 3 && str.[!i] = ' ' do
+        incr i
+      done;
+
+      if str.[!i] = 'C' then (
+        incr i;
+        while !i < l - 2 && let c = str.[!i] in c >= '0' && c <= '9' do
+          incr i
+        done;
+        while !i < l - 2 && str.[!i] = ' ' do
+          incr i
+        done;
+        if str.[!i] = '*' && str.[!i+1] = ')' then (
+          i := !i + 2;
+          Buffer.add_string b "(* ... *)"
+        ) else (
+          Buffer.add_substring b str i0 (!i - i0);
+        )
+      ) else (
+        Buffer.add_substring b str i0 (!i - i0)
+      )
+    ) else (
+      Buffer.add_char b c;
+      incr i
+    )
+  done;
+  Buffer.add_substring b str !i (l - !i);
+  Buffer.contents b
+
+let prepare_message lines =
+  let rec split_code_delimiter = function
+    | [] -> lines
+    | x :: xs ->
+      let found = ref false in
+      if String.for_all (fun c ->
+          if c = '^' then (found := true; true)
+          else if c = ' ' then not !found
+          else false
+        ) x
+      then xs
+      else
+        split_code_delimiter xs
+  in
+  List.map cleanup_comment (split_code_delimiter lines)
+
+let report_syntax_error_class (item, errors) =
+  let errors = List.map (fun (err : Ocamlformat.Error.syntax error) ->
+      {err with error = {err.error with message = prepare_message err.error.message}}
+    ) errors
+  in
+  let plural = function
+    | [] | [_] -> ""
+    | _ -> "s"
+  in
+  Printf.eprintf "* Error%s in `%s`\n" (plural errors) (Item.to_string grammar item);
+  let iter_by ~compare xs f =
+    ignore (group_by xs ~compare ~group:(fun x xs -> f x xs; ()) : unit list)
+  in
+  let compare_message e1 e2 =
+    List.compare String.compare
+      e1.error.Ocamlformat.Error.message
+      e2.error.Ocamlformat.Error.message
+  in
+  let compare_path e1 e2 =
+    List.compare Index.compare e1.path e2.path
+  in
+  (* Group by error message *)
+  iter_by errors ~compare:compare_message begin fun e es ->
+    Printf.eprintf "  + ```\n";
+    List.iteri
+      (fun i s -> Printf.eprintf "    %s%s\n" (String.make (2 * i) ' ') s)
+      e.error.Ocamlformat.Error.message;
+    Printf.eprintf "    ```\n";
+
+    iter_by (e :: es) ~compare:compare_path begin fun (e : Ocamlformat.Error.syntax error) es ->
+      Printf.eprintf "    - ```\n";
+      List.iteri begin fun i x ->
+        Printf.eprintf "      %s%s\n"
+          (String.make (2 * i) ' ')
+          (Item.to_string grammar x);
+      end (List.rev e.path);
+      Printf.eprintf "      ```\n";
+      Printf.eprintf "      Sample sentence (%d occurrence%s):\n"
+        (1 + List.length es)
+        (plural (e :: es));
+      Printf.eprintf "      ```ocaml\n";
+      Printf.eprintf "     ";
+      Derivation.iter_terminals ~f:(fun t ->
+          Printf.eprintf " %s" terminal_text.:(t))
+        e.derivation;
+      Printf.eprintf "\n";
+      Printf.eprintf "      ```\n";
+    end
+  end
+
 let () =
   let output_with_comments oc =
     let count = ref 0 in
@@ -866,63 +974,9 @@ let () =
       (* Errors by most frequent items *)
       match Occurence_heap.pop occurrences with
       | None -> ()
-      | Some (item, errors) ->
-        Printf.eprintf "* %d errors in `%s`\n" (List.length errors) (Item.to_string grammar item);
-        (* Group errors by path *)
-        let iter_by ~compare xs f =
-          ignore (group_by xs ~compare ~group:(fun x xs -> f x xs; ()) : unit list)
-        in
-        iter_by errors ~compare:(fun e1 e2 -> List.compare Index.compare e1.path e2.path)
-          (fun e es ->
-             Printf.eprintf "  + ```\n";
-             List.iteri (fun i x ->
-                 Printf.eprintf "    %s%s\n"
-                   (String.make (2 * i) ' ')
-                   (Item.to_string grammar x);
-               ) (List.rev e.path);
-             Printf.eprintf "    ```\n";
-             iter_by (e :: es) ~compare:(fun e1 e2 ->
-                 List.compare String.compare
-                   e1.error.Ocamlformat.Error.message
-                   e2.error.Ocamlformat.Error.message
-               ) (fun (e : Ocamlformat.Error.syntax error) es ->
-                 List.iteri
-                   (fun i line -> Printf.eprintf "    %c %s\n" (if i = 0 then '-' else ' ') line)
-                   e.error.message;
-                 Printf.eprintf "      Sample sentence (%d occurrences):"
-                   (1 + List.length es);
-                 Printf.eprintf "\n     ```ocaml\n";
-                 Printf.eprintf "     ";
-                 Derivation.iter_terminals ~f:(fun t ->
-                     Printf.eprintf " %s" terminal_text.:(t))
-                   e.derivation;
-                 Printf.eprintf "\n     ```\n";
-               )
-          );
+      | Some clss ->
+        report_syntax_error_class clss;
         loop ()
     in
     loop ()
-    (*List.iter (fun (count, item, errors) ->
-        Printf.eprintf "%d errors in %s\n" count (Item.to_string grammar item);
-        let errors =  errors in
-        let errors =
-          errors
-          |> List.map (fun (p, d, e) -> List.rev p, d, e)
-          |> group_by
-            ~compare:(fun (p1, _, _) (p2, _, _) -> List.compare Index.compare p1 p2)
-            ~group:(fun (p, d, e) others ->
-                group_by
-                  ~compare
-                  (e :: List.map (fun (_, _, e') -> e') others)
-                (p, d, )
-        in
-        match errors with
-        | [[], d, e, c] ->
-          Printf.eprintf "  %d cases in"
-        | _ ->
-        List.iter (fun (p, d, e) ->
-            Printf.eprintf "  %d cases in"
-
-          ) errors
-      ) by_errors*)
   )
