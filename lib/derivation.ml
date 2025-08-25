@@ -57,26 +57,18 @@ let rec get_terminal t i =
     else
       get_terminal right (i - len)
 
-let get_cells_on_path_to_index t i =
-  let rec loop acc t i =
-    let len = length t in
-    assert (i <= len);
-    let acc =
-      if i = 0 || i = len then
-        t.cell :: acc
-      else acc
-    in
-    match t.desc with
-    | Expand {expansion; _} -> loop acc expansion i
-    | Null | Shift _ -> acc
-    | Node {left; right; _} ->
-      let len = length left in
-      if i < len then
-        loop acc left i
-      else
-        loop acc right (i - len)
-  in
-  loop [] t i
+let rec get_cell t i =
+  match t.desc with
+  | Expand {expansion; _} -> get_cell expansion i
+  | Null | Shift _ ->
+    if i > 0 then raise Not_found;
+    t.cell
+  | Node {left; right; _} ->
+    let len = length left in
+    if i < len then
+      get_cell left i
+    else
+      get_cell right (i - len)
 
 let terminals der =
   let rec loop acc t =
@@ -130,20 +122,22 @@ let unroll_path der = function
     expand cell der reduction
 
 let items_of_expansion g ~expansion ~reduction =
-  let rec aux parent prod pos t =
+  let rec aux parents prod pos t =
     let item = Item.make g prod pos in
-    let cell = if pos = 0 then (t.cell, parent, item) else (t.cell, item, item) in
+    let parents = if pos = 0 then item :: parents else [item] in
+    let cell = (t.cell, parents) in
     match t.desc with
     | Null | Shift _ as desc ->
       pos + 1, {cell; desc}
-    | Node n ->
-      let pos, left = aux parent prod pos n.left in
-      let pos, right = aux parent prod pos n.right in
-      pos, {cell; desc = Node {n with left; right}}
     | Expand e ->
-      let _, expansion = aux item e.reduction.production 0 e.expansion in
+      let _, expansion = aux parents e.reduction.production 0 e.expansion in
       pos + 1, {cell; desc = Expand {e with expansion}}
+    | Node n ->
+      let cell = (t.cell, []) in
+      let pos, left = aux parents prod pos n.left in
+      let pos, right = aux [] prod pos n.right in
+      pos, {cell; desc = Node {n with left; right}}
   in
   let {Reachability.production; _} = reduction in
-  let _ , der = aux (Item.make g production 0) production 0 expansion in
+  let _ , der = aux [] production 0 expansion in
   der

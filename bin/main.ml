@@ -681,11 +681,106 @@ let prepare_derivation_for_check ~with_comments der =
               Printf.eprintf "  happens at the end of the sentence\n"
           end errors*)
 
-let find_error_token locations (startp, _ : int * int) =
-  let tok_loc (startp', _ : int * int) = startp' >= startp in
+let find_erroneous_token locations pos =
+  let tok_loc (startp', _ : int * int) = startp' >= pos in
   match Array.find_index tok_loc locations with
   | Some i -> i
   | None -> Array.length locations
+
+module Occurence_heap : sig
+  type ('n, 'a) t
+  val make : 'n cardinal -> ('a -> 'n indexset) -> ('n, 'a) t
+  val add : ('n, 'a) t -> 'a -> unit
+  val pop : ('n, 'a) t -> ('n index * 'a list) option
+end = struct
+
+  type ('n, 'a) elt = {
+    payload: 'a;
+    mutable active: bool;
+    occurrences: 'n indexset;
+  }
+
+  type ('n, 'a) t = {
+    table: ('n, ('n, 'a) elt list) vector;
+    outdated: 'n Boolvector.t;
+    get_occurrences: 'a -> 'n indexset;
+    mutable todo : 'n indexset;
+    mutable ranks : 'n indexset IntMap.t;
+  }
+
+  let make n get_occurrences = {
+    table = Vector.make n [];
+    outdated = Boolvector.make n false;
+    get_occurrences;
+    todo = IndexSet.empty;
+    ranks = IntMap.empty;
+  }
+
+  let mark_todo t occ =
+    if not (Boolvector.test t.outdated occ) then (
+      begin match List.length t.table.:(occ) with
+        | 0 -> ()
+        | count ->
+          t.ranks <- IntMap.update count (function
+              | None -> assert false
+              | Some set ->
+                let set' = IndexSet.remove occ set in
+                assert (set != set');
+                if IndexSet.is_empty set'
+                then None
+                else Some set'
+            ) t.ranks
+      end;
+      Boolvector.set t.outdated occ;
+      t.todo <- IndexSet.add occ t.todo
+    )
+
+  let add t payload =
+    let occurrences = t.get_occurrences payload in
+    let elt = {payload; occurrences; active = true} in
+    IndexSet.iter
+      (fun occ -> mark_todo t occ; t.table.@(occ) <- List.cons elt)
+      occurrences
+
+  let reindex t =
+    let todo = t.todo in
+    t.todo <- IndexSet.empty;
+    IndexSet.iter begin fun occ ->
+      Boolvector.clear t.outdated occ;
+      let elts = Misc.list_rev_filter (fun elt -> elt.active) t.table.:(occ) in
+      t.table.:(occ) <- elts;
+      match List.length elts with
+      | 0 -> ()
+      | count ->
+        t.ranks <- IntMap.update count (function
+            | None -> Some (IndexSet.singleton occ)
+            | Some set -> Some (IndexSet.add occ set)
+          ) t.ranks
+    end todo
+
+  let pop t =
+    reindex t;
+    match IntMap.max_binding_opt t.ranks with
+    | None -> None
+    | Some (_, occs) ->
+      let occ = IndexSet.choose occs in
+      let elts =
+        List.rev_map (fun elt ->
+            assert elt.active;
+            elt.active <- false;
+            IndexSet.iter (mark_todo t) elt.occurrences;
+            elt.payload
+          ) t.table.:(occ)
+      in
+      Some (occ, elts)
+
+end
+
+type 'a error = {
+  path: g item index list;
+  derivation: (g, Reach.r, Reach.Cell.n index * g item index list) Derivation.t;
+  error: 'a;
+}
 
 let () =
   let output_with_comments oc =
@@ -726,7 +821,7 @@ let () =
     let derivations = Array.of_seq derivations in
     let count = Array.length derivations in
     let sources =
-      Array.map (prepare_derivation_for_check ~with_comments:false) derivations
+      Array.map (prepare_derivation_for_check ~with_comments:!opt_comments) derivations
     in
     let outcome =
       Array.to_seq sources
@@ -737,62 +832,97 @@ let () =
     (* Classification.
        Step 1: mark cells that are known to succeed.
        -> They are less likely to cause error. *)
-    let safe_cells = Boolvector.make Reach.Cell.n false in
-    for i = 0 to count - 1 do
-      if List.is_empty outcome.(i) then
-        let rec mark_safe der =
-          Boolvector.set safe_cells (Derivation.cell der);
-          Derivation.iter_sub mark_safe der
-        in
-        mark_safe derivations.(i)
-    done;
+    (* let safe_cells = Boolvector.make Reach.Cell.n false in
+       for i = 0 to count - 1 do
+         if List.is_empty outcome.(i) then
+           let rec mark_safe der =
+             Boolvector.set safe_cells (Derivation.cell der);
+             Derivation.iter_sub mark_safe der
+           in
+           mark_safe derivations.(i)
+       done; *)
     (* Step 2: collect unsafe cells on path to syntax errors. *)
-    let class_table = Hashtbl.create 7 in
+    let occurrences =
+      Occurence_heap.make (Item.cardinal grammar)
+        (fun e -> IndexSet.of_list e.path)
+    in
     for i = 0 to count - 1 do
       let _, locations, _ = sources.(i) in
       List.iter begin function
         | Ocamlformat.Error.Internal _ -> ()
-        | Syntax error as err ->
+        | Syntax error ->
           assert (error.line = 1);
-          let pos = find_error_token locations error.char_range in
+          let pos = find_erroneous_token locations error.start_col in
           match derivations.(i).desc with
           | Expand {expansion; reduction} ->
-            let der = Derivation.items_of_expansion grammar ~expansion ~reduction in
-            let cells = Derivation.get_cells_on_path_to_index der pos in
-            let cells =
-              let is_unsafe (cell, _, _) = not (Boolvector.test safe_cells cell) in
-              match List.filter is_unsafe cells with
-              | [] -> [List.hd cells]
-              | unsafe_cells -> unsafe_cells
-            in
-            let items = list_uniq ~equal:(=) (List.map (fun (_,x,y) -> (x,y)) cells) in
-            List.iter (fun key ->
-                let r = match Hashtbl.find_opt class_table key with
-                  | Some r -> r
-                  | None -> let r = ref [] in Hashtbl.add class_table key r; r
-                in
-                r := (i, err) :: !r
-              ) items
+            let derivation = Derivation.items_of_expansion grammar ~expansion ~reduction in
+            let _cell, path = Derivation.get_cell derivation pos in
+            let path = list_uniq ~equal:Index.equal path in
+            Occurence_heap.add occurrences {derivation; error; path}
           | _ -> assert false
       end outcome.(i)
     done;
-    let by_errors =
-      Hashtbl.fold
-        (fun key errs acc ->
-           match List.length !errs with
-           | 0 -> acc
-           | l -> (l, key) :: acc)
-        class_table []
-      |> List.sort (fun (a,_) (b,_) -> Int.compare b a)
+    let rec loop () =
+      (* Errors by most frequent items *)
+      match Occurence_heap.pop occurrences with
+      | None -> ()
+      | Some (item, errors) ->
+        Printf.eprintf "* %d errors in `%s`\n" (List.length errors) (Item.to_string grammar item);
+        (* Group errors by path *)
+        let iter_by ~compare xs f =
+          ignore (group_by xs ~compare ~group:(fun x xs -> f x xs; ()) : unit list)
+        in
+        iter_by errors ~compare:(fun e1 e2 -> List.compare Index.compare e1.path e2.path)
+          (fun e es ->
+             Printf.eprintf "  + ```\n";
+             List.iteri (fun i x ->
+                 Printf.eprintf "    %s%s\n"
+                   (String.make (2 * i) ' ')
+                   (Item.to_string grammar x);
+               ) (List.rev e.path);
+             Printf.eprintf "    ```\n";
+             iter_by (e :: es) ~compare:(fun e1 e2 ->
+                 List.compare String.compare
+                   e1.error.Ocamlformat.Error.message
+                   e2.error.Ocamlformat.Error.message
+               ) (fun (e : Ocamlformat.Error.syntax error) es ->
+                 List.iteri
+                   (fun i line -> Printf.eprintf "    %c %s\n" (if i = 0 then '-' else ' ') line)
+                   e.error.message;
+                 Printf.eprintf "      Sample sentence (%d occurrences):"
+                   (1 + List.length es);
+                 Printf.eprintf "\n     ```ocaml\n";
+                 Printf.eprintf "     ";
+                 Derivation.iter_terminals ~f:(fun t ->
+                     Printf.eprintf " %s" terminal_text.:(t))
+                   e.derivation;
+                 Printf.eprintf "\n     ```\n";
+               )
+          );
+        loop ()
     in
-    List.iter (fun (count, (item, item')) ->
-        if item = item' then
-          Printf.eprintf "%d errors in\n  %s\n"
-            count (Item.to_string grammar item)
-        else
-          Printf.eprintf "%d errors in\n  %s\n    %s\n"
-            count
-            (Item.to_string grammar item)
-            (Item.to_string grammar item');
-      ) by_errors
+    loop ()
+    (*List.iter (fun (count, item, errors) ->
+        Printf.eprintf "%d errors in %s\n" count (Item.to_string grammar item);
+        let errors =  errors in
+        let errors =
+          errors
+          |> List.map (fun (p, d, e) -> List.rev p, d, e)
+          |> group_by
+            ~compare:(fun (p1, _, _) (p2, _, _) -> List.compare Index.compare p1 p2)
+            ~group:(fun (p, d, e) others ->
+                group_by
+                  ~compare
+                  (e :: List.map (fun (_, _, e') -> e') others)
+                (p, d, )
+        in
+        match errors with
+        | [[], d, e, c] ->
+          Printf.eprintf "  %d cases in"
+        | _ ->
+        List.iter (fun (p, d, e) ->
+            Printf.eprintf "  %d cases in"
+
+          ) errors
+      ) by_errors*)
   )

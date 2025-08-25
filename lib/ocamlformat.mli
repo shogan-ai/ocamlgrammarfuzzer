@@ -1,11 +1,17 @@
 module Error : sig
+  type syntax = {
+    line : int;
+    start_col: int;
+    end_col: int;
+    message : string list;
+  }
+
+  type internal = string
+
   type t =
-    | Syntax of {
-      line : int;
-      char_range : int * int;
-      message : string list;
-    }
-    | Internal of { message : string; }
+    | Syntax of syntax
+    | Internal of internal
+
   val to_string : t -> string
 end
 

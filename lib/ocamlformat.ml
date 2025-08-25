@@ -1,19 +1,24 @@
 open Utils.Misc
 
 module Error = struct
+  type syntax = {
+    line : int;
+    start_col: int;
+    end_col: int;
+    message : string list;
+  }
+
+  type internal = string
+
   type t =
-    | Syntax of {
-        line: int;
-        char_range: int * int;
-        message: string list;
-      }
-    | Internal of {message: string}
+    | Syntax of syntax
+    | Internal of internal
 
   let to_string = function
-    | Syntax {line; char_range = (s, e); message} ->
+    | Syntax {line; start_col; end_col; message} ->
       Printf.sprintf "syntax error: line %d.%d-%d: %s"
-        line s e (String.concat "\\n" message)
-    | Internal {message} ->
+        line start_col end_col (String.concat "\\n" message)
+    | Internal message ->
       Printf.sprintf "internal error: %s" message
 end
 
@@ -28,8 +33,7 @@ module Output_parser = struct
   let error_message_1 text ic =
     Scanf.sscanf_opt text
       {|File %S, line %d, characters %d-%d:|}
-      (fun input line scol ecol ->
-         let char_range = (scol, ecol) in
+      (fun input line start_col end_col ->
          let rec message acc =
            let line = input_line ic in
            if String.starts_with ~prefix:"Error: " line ||
@@ -38,7 +42,7 @@ module Output_parser = struct
            else message (line :: acc)
          in
          let message = message [] in
-         (input, Error.Syntax {line; char_range; message})
+         (input, Error.Syntax {line; start_col; end_col; message})
       )
 
   (* Error message shape 2:
@@ -77,7 +81,7 @@ module Output_parser = struct
       let bugl = String.length bug in
       let txtl = String.length text in
       let message = String.sub text bugl (txtl - bugl) in
-      Some (Error.Internal {message})
+      Some (Error.Internal message)
     else
       None
 
@@ -123,7 +127,7 @@ module Output_parser = struct
 
   let rev_cleanup_errors answers =
     let rec loop acc = function
-      | (input, Error.Internal {message = "comment changed."}) :: rest -> (
+      | (input, Error.Internal "comment changed.") :: rest -> (
           match rest with
           | (input', Error.Syntax se) :: _ when
               input = input' &&

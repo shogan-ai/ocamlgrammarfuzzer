@@ -294,6 +294,15 @@ let list_foralli f l =
   in
   loop 0 l
 
+let list_rev_filter f xs =
+  let rec loop acc = function
+    | [] -> acc
+    | x :: xs ->
+      let acc = if f x then x :: acc else acc in
+      loop acc xs
+  in
+  loop [] xs
+
 let rec list_rev_iter f = function
   | x1 :: x2 :: x3 :: x4 :: xs ->
     list_rev_iter f xs;
