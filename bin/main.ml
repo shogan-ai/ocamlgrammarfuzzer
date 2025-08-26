@@ -845,7 +845,7 @@ let report_error_class prepare_message item errors =
     | [] | [_] -> ""
     | _ -> "s"
   in
-  Printf.eprintf "* Error%s in `%s`\n" (plural errors) (Item.to_string grammar item);
+  Printf.eprintf "## Error%s in `%s`\n\n" (plural errors) (Item.to_string grammar item);
   let iter_by ~compare xs f =
     ignore (group_by xs ~compare ~group:(fun x xs -> f x xs; ()) : unit list)
   in
@@ -859,33 +859,34 @@ let report_error_class prepare_message item errors =
   in
   (* Group by error message *)
   iter_by errors ~compare:compare_message begin fun e es ->
-    Printf.eprintf "  + Message:\n";
-    Printf.eprintf "    ```\n";
+    Printf.eprintf "+ Message:\n";
+    Printf.eprintf "  ```\n";
     List.iteri
-      (fun i s -> Printf.eprintf "    %s%s\n" (String.make (2 * i) ' ') s)
+      (fun i s -> Printf.eprintf "  %s%s\n" (String.make (2 * i) ' ') s)
       e.error;
-    Printf.eprintf "    ```\n";
+    Printf.eprintf "  ```\n";
 
     iter_by (e :: es) ~compare:compare_path begin fun (e : string list error) es ->
-      Printf.eprintf "    - Derivation (%d occurrence%s):\n"
+      Printf.eprintf "  - Derivation (%d occurrence%s):\n"
         (1 + List.length es)
         (plural (e :: es));
-      Printf.eprintf "      ```\n";
+      Printf.eprintf "    ```\n";
       List.iteri begin fun i x ->
-        Printf.eprintf "      %s%s\n"
+        Printf.eprintf "    %s%s\n"
           (String.make (2 * i) ' ')
           (Item.to_string grammar x);
       end (List.rev e.path);
-      Printf.eprintf "      ```\n";
-      Printf.eprintf "      Sample sentence:\n";
-      Printf.eprintf "      ```ocaml\n";
-      Printf.eprintf "     ";
+      Printf.eprintf "    ```\n";
+      Printf.eprintf "    Sample sentence:\n";
+      Printf.eprintf "    ```ocaml\n";
+      Printf.eprintf "   ";
       Derivation.iter_terminals ~f:(fun t ->
           Printf.eprintf " %s" terminal_text.:(t))
         e.derivation;
       Printf.eprintf "\n";
-      Printf.eprintf "      ```\n";
-    end
+      Printf.eprintf "    ```\n";
+    end;
+    Printf.eprintf "\n"
   end
 
 let () =
