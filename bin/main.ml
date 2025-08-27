@@ -880,9 +880,13 @@ let report_error_class prepare_message item errors =
       Printf.eprintf "    Sample sentence:\n";
       Printf.eprintf "    ```ocaml\n";
       Printf.eprintf "   ";
+      let derivation = List.fold_left
+          (fun derivation e' -> if Derivation.length e'.derivation < Derivation.length derivation then e'.derivation else derivation)
+          e.derivation es
+      in
       Derivation.iter_terminals ~f:(fun t ->
           Printf.eprintf " %s" terminal_text.:(t))
-        e.derivation;
+        derivation;
       Printf.eprintf "\n";
       Printf.eprintf "    ```\n";
     end;
