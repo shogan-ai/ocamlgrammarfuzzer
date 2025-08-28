@@ -7,14 +7,10 @@
   (deps    parser_raw.cmly)
   (action
     (with-stdout-to %{targets}
-       (run %{exe:../ocaml/embed.exe} content=parser_raw.cmly))))
+       (run %{exe:../embed/embed.exe} content=parser_raw.cmly))))
 
-(library
-  (name ocaml_jane_parser)
-  (modules parser_raw)
-  (wrapped false)
-  (libraries compiler-libs.common menhirLib))
-
-(menhir
-  (modules parser_raw)
-  (flags :standard --inspection --table --cmly))
+(rule
+  (targets parser_raw.cmly parser_raw.ml parser_raw.mli)
+  (deps parser_raw.mly)
+  (action
+   (run menhir --table --cmly parser_raw.mly)))

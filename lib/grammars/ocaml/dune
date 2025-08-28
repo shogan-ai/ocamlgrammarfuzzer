@@ -1,7 +1,3 @@
-(executable
-  (name embed)
-  (modules embed))
-
 (library
   (name ocaml_grammar)
    (modules ocaml_grammar))
@@ -11,16 +7,10 @@
   (deps    parser_raw.cmly)
   (action
     (with-stdout-to %{targets}
-       (run %{exe:./embed.exe} content=parser_raw.cmly))))
+       (run %{exe:../embed/embed.exe} content=parser_raw.cmly))))
 
-(library
-  (name ocaml_parser)
-  (modules lexer_raw parser_raw parser_def)
-  (wrapped false)
-  (libraries compiler-libs.common menhirLib))
-
-(ocamllex lexer_raw)
-
-(menhir
-  (modules parser_raw)
-  (flags :standard --inspection --table --cmly))
+(rule
+  (targets parser_raw.cmly parser_raw.ml parser_raw.mli)
+  (deps parser_raw.mly)
+  (action
+   (run menhir --table --cmly parser_raw.mly)))
