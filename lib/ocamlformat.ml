@@ -149,7 +149,7 @@ module Output_parser = struct
     loop [] answers
 end
 
-let check_command = ["ocamlformat"; "--check"; "--enable-outside-detected-project"]
+let check_command = ["--check"; "--enable-outside-detected-project"]
 
 let batch_size = 80
 
@@ -166,7 +166,7 @@ let environ = lazy (Unix.environment ())
 
 let batch_ids = ref 0
 
-let start_batch = function
+let start_batch ~ocamlformat_command = function
   | [] -> None
   | inputs ->
     let id = !batch_ids in
@@ -183,8 +183,8 @@ let start_batch = function
     in
     let process =
       Unix.open_process_args_full
-        (List.hd check_command)
-        (Array.of_list (check_command @ files))
+        ocamlformat_command
+        (Array.of_list (ocamlformat_command :: check_command @ files))
         (Lazy.force environ)
     in
     Some (files, process)
@@ -248,12 +248,12 @@ let overlapping_force jobs seq =
   in
   reconstruct queue seq
 
-let check ?(jobs=0) seq =
+let check ?(ocamlformat_command="ocamlformat") ?(jobs=0) seq =
   seq
   |> (* Group by batches of appropriate size *)
   batch_by ~size:batch_size
   |> (* Launch a process for each batch *)
-  Seq.map start_batch
+  Seq.map (start_batch ~ocamlformat_command)
   |> (* Force sequence enough items ahead to kick [jobs] processes ahead *)
   overlapping_force jobs
   |> (* Collect the results *)

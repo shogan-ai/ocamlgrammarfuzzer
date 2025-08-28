@@ -16,6 +16,7 @@ let opt_avoid = ref ["error"]
 let opt_focus = ref []
 let opt_exhaust = ref false
 let opt_ocamlformat_check = ref false
+let opt_ocamlformat = ref "ocamlformat"
 
 let spec_list = [
   (* ("-n"         , Arg.Set_int opt_count, "<int> Number of lines to generate"  ); *)
@@ -33,6 +34,7 @@ let spec_list = [
   ("--avoid", Arg.String (push opt_avoid), " Forbid grammatical constructions");
   ("--focus", Arg.String (push opt_focus), " Generate sentences stressing a grammatical construction");
   ("--exhaust", Arg.Set opt_exhaust, " Exhaust mode generates a deterministic set of sentences that cover all reachable constructions");
+  ("--ocamlformat", Arg.Set_string opt_ocamlformat, " Path to OCamlformat command to use");
   ("--ocamlformat-check", Arg.Set opt_ocamlformat_check, " Check generated sentences with ocamlformat (default is to print them)");
 ]
 
@@ -937,7 +939,7 @@ let () =
     let outcome =
       Array.to_seq sources
       |> Seq.map (fun (k,_,s)  -> (k, s))
-      |> Ocamlformat.check ~jobs:8
+      |> Ocamlformat.check ~ocamlformat_command:!opt_ocamlformat ~jobs:8
       |> Array.of_seq
     in
     (* Classify syntax errors *)
