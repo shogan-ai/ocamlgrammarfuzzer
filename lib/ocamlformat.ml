@@ -28,20 +28,42 @@ module Output_parser = struct
 
      File "%s", line %d, characters %d-%d:
      Error: %s
+
+     or:
+
+
+     File "%s", line %d, characters %d-%d:
+     ... source ...
+         ^ pointer
+     %s
   *)
 
   let error_message_1 text ic =
     Scanf.sscanf_opt text
       {|File %S, line %d, characters %d-%d:|}
       (fun input line start_col end_col ->
-         let rec message acc =
-           let line = input_line ic in
-           if String.starts_with ~prefix:"Error: " line ||
-              (String.starts_with ~prefix:"  " line && acc = [])
-           then List.rev (line :: acc)
-           else message (line :: acc)
+         let message =
+           let text = input_line ic in
+           if String.starts_with ~prefix:"Error: " text ||
+              String.starts_with ~prefix:"  " text
+           then
+             [text]
+           else
+             let rec loop acc =
+               let text = input_line ic in
+               let caret = ref false in
+               let pred = function
+                 | ' ' -> not !caret
+                 | '^' -> caret := true; true
+                 | _ -> false
+               in
+               let acc = text :: acc in
+               if String.for_all pred text
+               then List.rev (input_line ic :: acc)
+               else loop acc
+             in
+             loop [text]
          in
-         let message = message [] in
          (input, Error.Syntax {line; start_col; end_col; message})
       )
 
@@ -193,15 +215,11 @@ let consume_batch = function
   | None -> Seq.empty
   | Some (files, (_, _, pstderr as process)) ->
     let errors =
-      let finally () =
-        List.iter (fun x -> try Unix.unlink x with _ -> ()) files;
-        ignore (Unix.close_process_full process);
-      in
-      match Output_parser.read_errors pstderr with
-      | r -> finally (); r
-      | exception exn -> finally (); raise exn
+      let r = Output_parser.read_errors pstderr in
+      List.iter (fun x -> try Unix.unlink x with _ -> ()) files;
+      ignore (Unix.close_process_full process);
+      Output_parser.rev_cleanup_errors r
     in
-    let errors = Output_parser.rev_cleanup_errors errors in
     let answer = Array.make (List.length files) [] in
     List.iter begin fun (input, error) ->
       match temp_path_index input with
