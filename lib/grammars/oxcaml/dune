@@ -1,9 +1,9 @@
 (library
-  (name ocaml_jane_grammar)
-   (modules ocaml_jane_grammar))
+  (name oxcaml_grammar)
+   (modules oxcaml_grammar))
 
 (rule
-  (targets ocaml_jane_grammar.ml)
+  (targets oxcaml_grammar.ml)
   (deps    parser_raw.cmly)
   (action
     (with-stdout-to %{targets}

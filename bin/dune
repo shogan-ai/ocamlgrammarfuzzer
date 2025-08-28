@@ -2,7 +2,7 @@
  (public_name grammarfuzzer)
  (name main)
  (modules main)
- (libraries grammarfuzzer menhirSdk front ocaml_grammar ocaml_jane_grammar))
+ (libraries grammarfuzzer menhirSdk front ocaml_grammar oxcaml_grammar))
 
 (executable
  (name mini_driver)

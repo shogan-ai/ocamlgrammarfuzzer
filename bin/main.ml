@@ -52,7 +52,7 @@ let () = match !opt_seed with
 module Grammar = MenhirSdk.Cmly_read.FromString(struct
     let content =
       if !opt_oxcaml
-      then Ocaml_jane_grammar.content
+      then Oxcaml_grammar.content
       else Ocaml_grammar.content
   end)
 
