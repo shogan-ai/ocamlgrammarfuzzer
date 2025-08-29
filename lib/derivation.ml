@@ -1,24 +1,24 @@
 open Fix.Indexing
 open Info
 
-type ('g, 'r, 'a) t = {
-  cell: 'a;
-  desc: ('g, 'r, 'a) desc;
+type ('g, 'r, 'm) t = {
+  meta: 'm;
+  desc: ('g, 'r, 'm) desc;
 }
-and ('g, 'r, 'a) desc =
+and ('g, 'r, 'm) desc =
   | Null
   | Shift of 'g terminal index
   | Node of {
-      left: ('g, 'r, 'a) t;
-      right: ('g, 'r, 'a) t;
+      left: ('g, 'r, 'm) t;
+      right: ('g, 'r, 'm) t;
       length: int;
     }
   | Expand of {
-      expansion: ('g, 'r, 'a) t;
+      expansion: ('g, 'r, 'm) t;
       reduction: 'g Reachability.reduction;
     }
 
-let cell t = t.cell
+let meta t = t.meta
 
 let rec length t = match t.desc with
   | Null -> 0
@@ -31,17 +31,17 @@ let iter_sub f t = match t.desc with
   | Node {left; right; _} -> f left; f right
   | Expand {expansion; _} -> f expansion
 
-let null cell = {cell; desc = Null}
+let null meta = {meta; desc = Null}
 
-let shift cell terminal =
-  {cell; desc = Shift terminal}
+let shift meta terminal =
+  {meta; desc = Shift terminal}
 
-let node cell left right =
+let node meta left right =
   let length = length left + length right in
-  {cell; desc = Node {left; right; length}}
+  {meta; desc = Node {left; right; length}}
 
-let expand cell expansion reduction =
-  {cell; desc = Expand {expansion; reduction}}
+let expand meta expansion reduction =
+  {meta; desc = Expand {expansion; reduction}}
 
 let rec get_terminal t i =
   match t.desc with
@@ -57,18 +57,18 @@ let rec get_terminal t i =
     else
       get_terminal right (i - len)
 
-let rec get_cell t i =
+let rec get_meta t i =
   match t.desc with
-  | Expand {expansion; _} -> get_cell expansion i
+  | Expand {expansion; _} -> get_meta expansion i
   | Null | Shift _ ->
-    if i > 0 then raise Not_found;
-    t.cell
+    (*if i > 0 then raise Not_found;*)
+    t.meta
   | Node {left; right; _} ->
     let len = length left in
     if i < len then
-      get_cell left i
+      get_meta left i
     else
-      get_cell right (i - len)
+      get_meta right (i - len)
 
 let terminals der =
   let rec loop acc t =
@@ -90,54 +90,55 @@ let rec iter_terminals ~f t =
   | Expand {expansion; _} ->
     iter_terminals ~f expansion
 
-type ('g, 'r, 'a) path =
+type ('g, 'm, 'a) path =
   | Left_of of {
       right: 'a;
-      cell: 'r Reachability.cell index;
+      meta: 'm;
     }
   | Right_of of {
       left: 'a;
-      cell: 'r Reachability.cell index;
+      meta: 'm;
     }
   | In_expansion of {
       reduction: 'g Reachability.reduction;
-      cell: 'r Reachability.cell index;
+      meta: 'm;
     }
 
 let map_path f = function
-  | Left_of {right; cell} ->
+  | Left_of {right; meta} ->
     let right = f right in
-    Left_of {right; cell}
-  | Right_of {left; cell} ->
+    Left_of {right; meta}
+  | Right_of {left; meta} ->
     let left = f left in
-    Right_of {left; cell}
+    Right_of {left; meta}
   | In_expansion _ as x -> x
 
 let unroll_path der = function
-  | Left_of {right; cell} ->
-    node cell der right
-  | Right_of {left; cell} ->
-    node cell left der
-  | In_expansion {reduction; cell} ->
-    expand cell der reduction
+  | Left_of {right; meta} ->
+    node meta der right
+  | Right_of {left; meta} ->
+    node meta left der
+  | In_expansion {reduction; meta} ->
+    expand meta der reduction
 
-let items_of_expansion g ~expansion ~reduction =
-  let rec aux parents prod pos t =
+let items_of_expansion _g ~expansion:_ ~reduction:_ =
+  failwith "TODO"
+  (*let rec aux parents prod pos t =
     let item = Item.make g prod pos in
-    let cell = (t.cell, parents) in
+    let meta = (t.meta, parents) in
     match t.desc with
     | Null | Shift _ as desc ->
-      pos + 1, {cell; desc}
+      pos + 1, {meta; desc}
     | Expand e ->
       let parents = if pos = 0 then item :: parents else [item] in
       let _, expansion = aux parents e.reduction.production 0 e.expansion in
-      pos + 1, {cell; desc = Expand {e with expansion}}
+      pos + 1, {meta; desc = Expand {e with expansion}}
     | Node n ->
-      let cell = (t.cell, []) in
+      let meta = (t.meta, []) in
       let pos, left = aux parents prod pos n.left in
       let pos, right = aux [] prod pos n.right in
-      pos, {cell; desc = Node {n with left; right}}
+      pos, {meta; desc = Node {n with left; right}}
   in
   let {Reachability.production; _} = reduction in
   let _ , der = aux [] production 0 expansion in
-  der
+    der*)
