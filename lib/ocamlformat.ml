@@ -5,7 +5,7 @@ module Error = struct
     line : int;
     start_col: int;
     end_col: int;
-    message : string list;
+    message : string;
   }
 
   type internal = string
@@ -13,58 +13,78 @@ module Error = struct
   type t =
     | Syntax of syntax
     | Internal of internal
+    | Comment_dropped of int
 
   let to_string = function
     | Syntax {line; start_col; end_col; message} ->
       Printf.sprintf "syntax error: line %d.%d-%d: %s"
-        line start_col end_col (String.concat "\\n" message)
+        line start_col end_col message
     | Internal message ->
       Printf.sprintf "internal error: %s" message
+    | Comment_dropped index ->
+      Printf.sprintf "comment error: comment %d dropped"
+        index
 end
 
 module Output_parser = struct
 
   (* Error message shape 1:
 
-     File "%s", line %d, characters %d-%d:
-     Error: %s
+     Starts with a line:
+     > File "%s", line %d, characters %d-%d:
 
+     Followed by an optional quotation of problematic source:
+     > %d| ... problem ...
+              ^^^^^^^
+
+     Terminated by:
+     > Error: %s
      or:
+     >   This %s is unmatched.
 
+     The special case:
+     > Error: comment (*  C%d  *) dropped.
+     is also detected here.
 
-     File "%s", line %d, characters %d-%d:
-     ... source ...
-         ^ pointer
-     %s
+     Once the first line has been identified, parsing should fail if the
+     following lines do not match the template.
   *)
 
   let error_message_1 text ic =
     Scanf.sscanf_opt text
       {|File %S, line %d, characters %d-%d:|}
       (fun input line start_col end_col ->
-         let message =
-           let text = input_line ic in
-           if String.starts_with ~prefix:"Error: " text ||
-              String.starts_with ~prefix:"  " text
-           then
-             [text]
-           else
-             let rec loop acc =
-               let text = input_line ic in
-               let caret = ref false in
-               let pred = function
-                 | ' ' -> not !caret
-                 | '^' -> caret := true; true
-                 | _ -> false
-               in
-               let acc = text :: acc in
-               if String.for_all pred text
-               then List.rev (input_line ic :: acc)
-               else loop acc
-             in
-             loop [text]
+         let match_terminator text =
+           match Scanf.sscanf_opt text "%d|%s" (fun _ _ -> ()) with
+           | Some _ -> None
+           | None ->
+             match Scanf.sscanf_opt text "Error: comment (*  C%d  *) dropped." (fun d -> d) with
+             | Some d -> Some (Some (input, Error.Comment_dropped d))
+             | None ->
+               match Scanf.sscanf_opt text "Error: %s" (fun msg -> msg) with
+               | Some message -> Some (Some (input, Error.Syntax {line; start_col; end_col; message}))
+               | None ->
+                 if String.starts_with ~prefix:"  This "  text then
+                   Some None
+                 else
+                   failwithf "Unexpected line %S" text
          in
-         (input, Error.Syntax {line; start_col; end_col; message})
+         match match_terminator (input_line ic) with
+         | Some result -> result
+         | _ ->
+           let caret = ref false in
+           let pred = function
+             | ' ' -> not !caret
+             | '^' -> caret := true; true
+             | _ -> false
+           in
+           while not (String.for_all pred (input_line ic)) do
+             caret := false
+           done;
+           let text = input_line ic in
+           match match_terminator  text with
+           | None -> failwithf "Unexpected line %S (looking for error terminator)" text
+           | Some result -> result
       )
 
   (* Error message shape 2:
@@ -115,7 +135,7 @@ module Output_parser = struct
       let next =
         try
           match error_message_1 line ic with
-          | Some _ as r -> r
+          | Some r -> r
           | None ->
             match error_message_3_part_1 line ic with
             | Some input ->
@@ -151,11 +171,7 @@ module Output_parser = struct
     let rec loop acc = function
       | (input, Error.Internal "comment changed.") :: rest -> (
           match rest with
-          | (input', Error.Syntax se) :: _ when
-              input = input' &&
-              String.starts_with ~prefix:"Error: comment (*"
-                (List.hd se.message)
-            ->
+          | (input', Error.Comment_dropped _) :: _ when input = input' ->
             loop acc rest
           | _ ->
             let msg = match rest with

@@ -3,7 +3,7 @@ module Error : sig
     line : int;
     start_col: int;
     end_col: int;
-    message : string list;
+    message : string;
   }
 
   type internal = string
@@ -11,6 +11,7 @@ module Error : sig
   type t =
     | Syntax of syntax
     | Internal of internal
+    | Comment_dropped of int
 
   val to_string : t -> string
 end

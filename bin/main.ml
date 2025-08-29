@@ -449,8 +449,8 @@ let () =
     | R (l, r) ->
       iter_sub_nodes ~f:(fun left right ->
           if reachable left && reachable right then (
-            visit (Derivation.Left_of {right; cell} :: path) left;
-            visit (Derivation.Right_of {left; cell} :: path) right;
+            visit (Derivation.Left_of {right; meta=cell} :: path) left;
+            visit (Derivation.Right_of {left; meta=cell} :: path) right;
           )
         ) i_pre i_post l r
     | L tr ->
@@ -459,7 +459,7 @@ let () =
       | L gt ->
         iter_eqns i_pre i_post gt ~f:(fun reduction cell' ->
             if weights.:(reduction.production) > 0.0 then
-              visit (In_expansion {reduction; cell} :: path) cell'
+              visit (In_expansion {reduction; meta=cell} :: path) cell'
           )
   in
   IndexSet.iter (fun tr ->
@@ -577,7 +577,7 @@ let derivations =
             (String.concat ", " (List.rev (("or " ^ x) :: xs)))
     );
     let rec mark_derivation der =
-      Boolvector.clear todo (Derivation.cell der);
+      Boolvector.clear todo (Derivation.meta der);
       Derivation.iter_sub mark_derivation der
     in
     let gen_cell length cell =
@@ -621,7 +621,7 @@ let report_invalid_entrypoint =
     false
 
 let entrypoint_of_derivation der =
-    let node, _, _ = Reach.Cell.decode (Derivation.cell der) in
+    let node, _, _ = Reach.Cell.decode (Derivation.meta der) in
     match Reach.Tree.split node with
     | R _ -> assert false
     | L tr -> Transition.symbol grammar tr
@@ -637,14 +637,17 @@ let prepare_derivation_for_check ~with_comments der =
   in
   let locations = ref [] in
   let add_terminal terminal =
-    if with_comments then add_comment ();
-    let startp = match Buffer.length buf with
-      | 0 -> 0
-      | n -> Buffer.add_char buf ' '; (n + 1)
-    in
-    Buffer.add_string buf terminal_text.:(terminal);
-    let endp = Buffer.length buf in
-    push locations (startp, endp)
+    match terminal_text.:(terminal) with
+    | "" -> () (* ignore EOF *)
+    | text ->
+      if with_comments then add_comment ();
+      let startp = match Buffer.length buf with
+        | 0 -> 0
+        | n -> Buffer.add_char buf ' '; (n + 1)
+      in
+      Buffer.add_string buf text;
+      let endp = Buffer.length buf in
+      push locations (startp, endp)
   in
   Derivation.iter_terminals ~f:add_terminal der;
   if with_comments then add_comment ();
@@ -694,6 +697,7 @@ module Occurence_heap : sig
   val make : 'n cardinal -> ('n, 'a) t
   val add : ('n, 'a) t -> 'n indexset -> 'a -> unit
   val pop : ('n, 'a) t -> ('n index * 'a list) option
+  val pop_seq : ('n, 'a) t -> ('n index * 'a list) Seq.t
 end = struct
 
   type ('n, 'a) elt = {
@@ -773,18 +777,30 @@ end = struct
       in
       Some (occ, elts)
 
+  let pop_seq t =
+    let rec self () =
+      match pop t with
+      | None -> Seq.Nil
+      | Some x ->
+        Seq.Cons (x, self)
+    in
+    self
 end
+
+let _ = Occurence_heap.pop
 
 type 'a error = {
   path: g item index list;
-  derivation: (g, Reach.r, Reach.Cell.n index * g item index list) Derivation.t;
+  derivation: (g, Reach.r, g item index list *
+                           Reach.Cell.n index *
+                           g item index list) Derivation.t;
   error: 'a;
 }
 
 (* Some messages contain a comment.
    They are noise when trying to classify problems, so let's remove them. *)
 
-let cleanup_comment str =
+(*let cleanup_comment str =
   let l = String.length str in
   let b = Buffer.create l in
   let i = ref 0 in
@@ -837,95 +853,128 @@ let prepare_message lines =
       else
         split_code_delimiter xs
   in
-  List.map cleanup_comment (split_code_delimiter lines)
+  List.map cleanup_comment (split_code_delimiter lines) *)
 
-let report_error_class item errors =
-  let plural = function
-    | [] | [_] -> ""
-    | _ -> "s"
-  in
-  Printf.eprintf "## Error%s in `%s`\n\n" (plural errors) (Item.to_string grammar item);
+let plural = function
+  | [] | [_] -> ""
+  | _ -> "s"
+
+let report_error_samples ~with_comment errors =
   let iter_by ~compare xs f =
-    ignore (group_by xs ~compare ~group:(fun x xs -> f x xs; ()) : unit list)
-  in
-  let compare_message e1 e2 =
-    List.compare String.compare
-      e1.error
-      e2.error
+    xs
+    |> group_by ~compare ~group:(fun x xs -> (1 + List.length xs, x, xs))
+    |> List.sort (fun (r1, _, _) (r2, _, _) -> Int.compare r2 r1)
+    |> List.iter (fun (_, x, xs) -> f x xs)
   in
   let compare_path e1 e2 =
     List.compare Index.compare e1.path e2.path
   in
-  (* Group by error message *)
-  iter_by errors ~compare:compare_message begin fun e es ->
-    Printf.eprintf "+ Message:\n";
-    Printf.eprintf "  ```\n";
-    List.iteri
-      (fun i s -> Printf.eprintf "  %s%s\n" (String.make (2 * i) ' ') s)
-      e.error;
-    Printf.eprintf "  ```\n";
-
-    iter_by (e :: es) ~compare:compare_path begin fun (e : string list error) es ->
-      Printf.eprintf "  - Derivation (%d occurrence%s):\n"
-        (1 + List.length es)
-        (plural (e :: es));
-      Printf.eprintf "    ```\n";
-      List.iteri begin fun i x ->
-        Printf.eprintf "    %s%s\n"
-          (String.make (2 * i) ' ')
-          (Item.to_string grammar x);
-      end (List.rev e.path);
-      Printf.eprintf "    ```\n";
-      Printf.eprintf "    Sample sentence:\n";
-      Printf.eprintf "    ```ocaml\n";
-      Printf.eprintf "   ";
-      let derivation = List.fold_left
-          (fun derivation e' -> if Derivation.length e'.derivation < Derivation.length derivation then e'.derivation else derivation)
-          e.derivation es
+  iter_by errors ~compare:compare_path begin fun (e : int error) es ->
+    Printf.printf "- Derivation (%d occurrence%s):\n"
+      (1 + List.length es)
+      (plural (e :: es));
+    Printf.printf "  ```\n";
+    List.iteri begin fun i x ->
+      Printf.printf "  %s%s\n"
+        (String.make (2 * i) ' ')
+        (Item.to_string grammar x);
+    end (List.rev e.path);
+    Printf.printf "  ```\n";
+    Printf.printf "  Sample sentence:\n";
+    Printf.printf "  ```ocaml\n";
+    let sample = List.fold_left
+        (fun e e' ->
+           if Derivation.length e'.derivation <
+              Derivation.length e.derivation
+           then e'
+           else e
+        ) e es
+    in
+    let i = ref 0 in
+    let buf = Buffer.create 31 in
+    let hilight = ref (0,0) in
+    let add_text text =
+      let startp = match Buffer.length buf with
+        | 0 -> 0
+        | n -> Buffer.add_char buf ' '; n + 1
       in
-      Derivation.iter_terminals ~f:(fun t ->
-          Printf.eprintf " %s" terminal_text.:(t))
-        derivation;
-      Printf.eprintf "\n";
-      Printf.eprintf "    ```\n";
+      Buffer.add_string buf text;
+      if !i = sample.error then (
+        hilight := (startp, Buffer.length buf)
+      )
+    in
+    Derivation.iter_terminals sample.derivation
+      ~f:(fun t ->
+          if !i = sample.error && with_comment then
+            add_text "(* ... *)";
+          incr i;
+          add_text terminal_text.:(t));
+    Printf.printf "  %s\n" (Buffer.contents buf);
+    begin match !hilight with
+      | (s, e) when e > s ->
+        Printf.printf "  %s%s\n" (String.make s ' ') (String.make (e-s) '^')
+      | _ -> ()
     end;
-    Printf.eprintf "\n"
-  end
+    Printf.printf "  ```\n";
+  end;
+  Printf.printf "\n"
 
 let report_syntax_errors derivations sources outcome =
-  let count = Array.length derivations in
   (* Classify syntax errors *)
-  Printf.eprintf "# Syntax errors\n\n";
-  let occurrences = Occurence_heap.make (Item.cardinal grammar) in
+  Printf.printf "# Syntax errors\n\n";
+  (* Group by error message *)
+  let count = Array.length derivations in
+  let by_message = Hashtbl.create 7 in
   for i = 0 to count - 1 do
-    let _, locations, _ = sources.(i) in
+    let _, locations, text = sources.(i) in
     List.iter begin function
-      | Ocamlformat.Error.Internal _ -> ()
+      | Ocamlformat.Error.Internal _ | Comment_dropped _ -> ()
       | Syntax error ->
-        assert (error.line = 1);
-        let pos = find_erroneous_token locations error.start_col in
-        match derivations.(i).Derivation.desc with
-        | Expand {expansion; reduction} ->
-          let derivation = Derivation.items_of_expansion grammar ~expansion ~reduction in
-          let _cell, path = Derivation.get_cell derivation pos in
-          Occurence_heap.add occurrences (IndexSet.of_list path) {derivation; error; path}
-        | _ -> assert false
+        let pos =
+          if error.line = 1
+          then find_erroneous_token locations error.start_col
+          else (
+            Printf.eprintf "Sentence %S has errors on line %d.%d-%d?!\n"
+              text error.line error.start_col error.end_col;
+            Array.length locations
+          )
+        in
+        let expansion, reduction =
+          match derivations.(i).Derivation.desc with
+          | Expand {expansion; reduction} -> (expansion, reduction)
+          | _ -> assert false
+        in
+        let derivation = Derivation.items_of_expansion grammar ~expansion ~reduction in
+        let path, _cell, _path = Derivation.get_meta derivation pos in
+        let message = error.message in
+        let error = {derivation; error = pos; path} in
+        match Hashtbl.find_opt by_message message with
+        | None -> Hashtbl.add by_message message (ref [error])
+        | Some r -> push r error
     end outcome.(i)
   done;
-  let rec loop () =
-    (* Errors by most frequent items *)
-    match Occurence_heap.pop occurrences with
-    | None -> ()
-    | Some (item, errors) ->
-      report_error_class
-        item
-        (List.map (fun e -> {e with error = e.error.Ocamlformat.Error.message}) errors);
-      loop ()
+  let by_message =
+    Array.of_seq (Seq.map (fun (k, v) -> (k, List.length !v, !v))
+                    (Hashtbl.to_seq by_message))
   in
-  loop ()
+  Array.sort (fun (_,r1,_) (_,r2,_) -> Int.compare r2 r1) by_message;
+  let heap = Occurence_heap.make (Item.cardinal grammar) in
+  Array.iter (fun (message, _, errors) ->
+      Printf.printf "## %s\n" message;
+      (* Errors by most frequent items *)
+      List.iter
+        (fun e -> Occurence_heap.add heap (IndexSet.of_list e.path) e)
+        errors;
+      Occurence_heap.pop_seq heap |> Seq.iter @@ fun (item, errors) ->
+      Printf.printf "### Item `%s` (in %d error%s)\n"
+        (Item.to_string grammar item)
+        (List.length errors) (plural errors);
+      report_error_samples ~with_comment:false errors;
+    ) by_message
 
-let report_internal_errors derivations sources outcome =
-  let count = Array.length derivations in
+let report_internal_errors _derivations _sources _outcome =
+  ()
+  (*let count = Array.length derivations in
   (* Classify internal errors *)
   Printf.eprintf "\n# Internal errors\n\n";
   let occurrences = Occurence_heap.make (Item.cardinal grammar) in
@@ -971,7 +1020,7 @@ let report_internal_errors derivations sources outcome =
       report_error_class item (List.map prepare_error errors);
       loop ()
   in
-  loop ()
+  loop ()*)
 
 let () =
   let output_with_comments oc =
@@ -997,7 +1046,7 @@ let () =
     Seq.iter begin fun der ->
       if !opt_print_entrypoint then (
         let entrypoint =
-          let node, _, _ = Reach.Cell.decode (Derivation.cell der) in
+          let node, _, _ = Reach.Cell.decode (Derivation.meta der) in
           match Reach.Tree.split node with
           | R _ -> assert false
           | L tr -> Transition.symbol grammar tr
