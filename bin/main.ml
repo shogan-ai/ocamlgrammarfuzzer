@@ -869,7 +869,7 @@ let report_error_samples ~with_comment errors =
   let compare_path e1 e2 =
     List.compare Index.compare e1.path e2.path
   in
-  iter_by errors ~compare:compare_path begin fun (e : int error) es ->
+  iter_by errors ~compare:compare_path begin fun (e : ([`Intf | `Impl] * int option) error) es ->
     Printf.printf "- Derivation (%d occurrence%s):\n"
       (1 + List.length es)
       (plural (e :: es));
@@ -880,8 +880,6 @@ let report_error_samples ~with_comment errors =
         (Item.to_string grammar x);
     end (List.rev e.path);
     Printf.printf "  ```\n";
-    Printf.printf "  Sample sentence:\n";
-    Printf.printf "  ```ocaml\n";
     let sample = List.fold_left
         (fun e e' ->
            if Derivation.length e'.derivation <
@@ -890,6 +888,10 @@ let report_error_samples ~with_comment errors =
            else e
         ) e es
     in
+    let kind, position = sample.error in
+    Printf.printf "  Sample sentence (%s):\n"
+      (match kind with `Impl -> "implementation" | `Intf -> "interface");
+    Printf.printf "  ```ocaml\n";
     let i = ref 0 in
     let buf = Buffer.create 31 in
     let hilight = ref (0,0) in
@@ -899,14 +901,13 @@ let report_error_samples ~with_comment errors =
         | n -> Buffer.add_char buf ' '; n + 1
       in
       Buffer.add_string buf text;
-      if !i = sample.error then (
-        hilight := (startp, Buffer.length buf)
-      );
+      if Some !i = position then
+        hilight := (startp, Buffer.length buf);
       incr i
     in
     Derivation.iter_terminals sample.derivation
       ~f:(fun t ->
-          if !i = sample.error && with_comment then
+          if Some !i = position && with_comment then
             add_text "(* ... *)";
           add_text terminal_text.:(t);
         );
@@ -921,25 +922,19 @@ let report_error_samples ~with_comment errors =
   Printf.printf "\n"
 
 let report_syntax_errors derivations sources outcome =
-  (* Classify syntax errors *)
   Printf.printf "# Syntax errors\n\n";
-  (* Group by error message *)
-  let count = Array.length derivations in
+  (* Filter and group by error message *)
   let by_message = Hashtbl.create 7 in
-  for i = 0 to count - 1 do
-    let _, locations, text = sources.(i) in
+  for i = 0 to Array.length derivations - 1 do
+    let kind, locations, text = sources.(i) in
     List.iter begin function
-      | Ocamlformat.Error.Internal _ | Comment_dropped _ -> ()
+      | Ocamlformat.Error.Internal _
+      | Comment_dropped _ -> ()
+      | Syntax error when error.line <> 1 ->
+        Printf.eprintf "Internal error: unexpected error at %d.%d-%d (sentence: %S)\n"
+          error.line error.start_col error.end_col text
       | Syntax error ->
-        let pos =
-          if error.line = 1
-          then find_erroneous_token locations error.start_col
-          else (
-            Printf.eprintf "Sentence %S has errors on line %d.%d-%d?!\n"
-              text error.line error.start_col error.end_col;
-            Array.length locations
-          )
-        in
+        let pos = find_erroneous_token locations error.start_col in
         let expansion, reduction =
           match derivations.(i).Derivation.desc with
           | Expand {expansion; reduction} -> (expansion, reduction)
@@ -948,17 +943,19 @@ let report_syntax_errors derivations sources outcome =
         let derivation = Derivation.items_of_expansion grammar ~expansion ~reduction in
         let path, _cell, _path = Derivation.get_meta derivation pos in
         let message = error.message in
-        let error = {derivation; error = pos; path} in
+        let error = {derivation; error = (kind, Some pos); path} in
         match Hashtbl.find_opt by_message message with
         | None -> Hashtbl.add by_message message (ref [error])
         | Some r -> push r error
     end outcome.(i)
   done;
+  (* Order by number of occurrences *)
   let by_message =
     Array.of_seq (Seq.map (fun (k, v) -> (k, List.length !v, !v))
                     (Hashtbl.to_seq by_message))
   in
   Array.sort (fun (_,r1,_) (_,r2,_) -> Int.compare r2 r1) by_message;
+  (* Classify by item *)
   let heap = Occurence_heap.make (Item.cardinal grammar) in
   Array.iter (fun (message, _, errors) ->
       Printf.printf "## %s\n" message;
@@ -966,62 +963,155 @@ let report_syntax_errors derivations sources outcome =
       List.iter
         (fun e -> Occurence_heap.add heap (IndexSet.of_list e.path) e)
         errors;
-      Occurence_heap.pop_seq heap |> Seq.iter @@ fun (item, errors) ->
-      Printf.printf "### Item `%s` (in %d error%s)\n"
-        (Item.to_string grammar item)
-        (List.length errors) (plural errors);
-      report_error_samples ~with_comment:false errors;
-    ) by_message
+      Seq.iter (fun (item, errors) ->
+          Printf.printf "\n### Item `%s` (in %d error%s)\n"
+            (Item.to_string grammar item)
+            (List.length errors) (plural errors);
+          report_error_samples ~with_comment:false errors;
+        ) (Occurence_heap.pop_seq heap)
+    ) by_message;
+  Printf.printf "\n"
 
-let report_internal_errors _derivations _sources _outcome =
-  ()
-  (*let count = Array.length derivations in
-  (* Classify internal errors *)
-  Printf.eprintf "\n# Internal errors\n\n";
-  let occurrences = Occurence_heap.make (Item.cardinal grammar) in
-  for i = 0 to count - 1 do
+let report_comment_dropped derivations sources outcome =
+  Printf.printf "# Comment dropped\n\n";
+  (* Classify by item *)
+  let heap = Occurence_heap.make (Item.cardinal grammar) in
+  for i = 0 to Array.length derivations - 1 do
+    let kind, _locations, _text = sources.(i) in
     List.iter begin function
-      | Ocamlformat.Error.Syntax _ -> ()
-      | Internal message ->
-        match derivations.(i).Derivation.desc with
-        | Expand {expansion; reduction} ->
-          let derivation = Derivation.items_of_expansion grammar ~expansion ~reduction in
-          let items = ref IndexSet.empty in
-          let rec register der =
-            let _cell, path = Derivation.cell der in
-            items := IndexSet.union (IndexSet.of_list path) !items;
-            Derivation.iter_sub register der
-          in
-          register derivation;
-          Occurence_heap.add occurrences !items (derivation, message);
-        | _ -> assert false
+      | Ocamlformat.Error.Internal _ | Syntax _ -> ()
+      | Comment_dropped pos ->
+        let expansion, reduction =
+          match derivations.(i).Derivation.desc with
+          | Expand {expansion; reduction} -> (expansion, reduction)
+          | _ -> assert false
+        in
+        let derivation = Derivation.items_of_expansion grammar ~expansion ~reduction in
+        let path, _cell, _path = Derivation.get_meta derivation pos in
+        Occurence_heap.add heap (IndexSet.of_list path)
+          {derivation; error = (kind, Some pos); path}
     end outcome.(i)
   done;
-  let rec loop () =
-    (* Errors by most frequent items *)
-    match Occurence_heap.pop occurrences with
-    | None -> ()
-    | Some (item, errors) ->
-      let prepare_error (derivation, error) =
-        let path = ref [] in
-        begin try
-            let rec find_path der =
-              let _, path' = Derivation.cell der in
-              Derivation.iter_sub find_path der;
-              if List.mem item path' then (
-                path := path';
-                raise Exit
-              )
-            in
-            find_path derivation
-          with Exit -> ()
-        end;
-        {derivation; error = [error]; path = !path}
+  (* Print errors by most frequent item *)
+  Seq.iter (fun (item, errors) ->
+      Printf.printf "## Item `%s` (in %d error%s)\n"
+        (Item.to_string grammar item)
+        (List.length errors) (plural errors);
+      report_error_samples ~with_comment:true errors;
+    ) (Occurence_heap.pop_seq heap);
+  Printf.printf "\n"
+
+let report_internal_errors derivations sources outcome =
+  Printf.printf "# Internal errors\n\n";
+  Printf.printf "Note: when OCamlformat fails with an internal error, \
+                 it is not possible to know the location of the problem.\n";
+  Printf.printf
+    "Locations for these errors are guessed by looking at the syntactic \
+     constructions that appear most often in the failing sentences.\n\n";
+
+  (* Filter and group by error message *)
+  let by_message = Hashtbl.create 7 in
+  let safe_cells = Boolvector.make Reach.Cell.n false in
+  for i = 0 to Array.length derivations - 1 do
+    match outcome.(i) with
+    | [] ->
+
+      (* No error, mark all cells in this derivation as safe *)
+      let rec mark_safe der =
+        Boolvector.set safe_cells (Derivation.meta der);
+        Derivation.iter_sub mark_safe der
       in
-      report_error_class item (List.map prepare_error errors);
-      loop ()
+      mark_safe derivations.(i)
+
+    | errors ->
+      let kind, _locations, _text = sources.(i) in
+      List.iter begin function
+        | Ocamlformat.Error.Syntax _
+        | Comment_dropped _ -> ()
+        | Internal message ->
+          let expansion, reduction =
+            match derivations.(i).Derivation.desc with
+            | Expand {expansion; reduction} -> (expansion, reduction)
+            | _ -> assert false
+          in
+          let derivation = Derivation.items_of_expansion grammar ~expansion ~reduction in
+          let unsafe_items = ref IndexSet.empty in
+          let add_item item = unsafe_items := IndexSet.add item !unsafe_items in
+          let rec collect_unsafe der =
+            let path, cell, _path = Derivation.meta der in
+            if not (Boolvector.test safe_cells cell) then
+              List.iter add_item path;
+            Derivation.iter_sub collect_unsafe der
+          in
+          collect_unsafe derivation;
+          let rec collect_any der =
+            let path, _cell, _path = Derivation.meta der in
+            List.iter add_item path;
+            Derivation.iter_sub collect_any der
+          in
+          if IndexSet.is_empty !unsafe_items then
+            collect_any derivation;
+          assert (not (IndexSet.is_empty !unsafe_items));
+          let error = {derivation; error = (kind, !unsafe_items); path = []} in
+          match Hashtbl.find_opt by_message message with
+          | None -> Hashtbl.add by_message message (ref [error])
+          | Some r -> push r error
+      end errors
+  done;
+  let annotate_with_item item error =
+    let path = ref [] in
+    let pos = ref 0 in
+    let find_pos any der =
+      let rec loop der =
+        let pos' = !pos in
+        Derivation.iter_sub loop der;
+        let path', cell, _ = Derivation.meta der in
+        if (any || not (Boolvector.test safe_cells cell)) &&
+           List.mem item path'
+        then (
+          pos := pos';
+          path := path';
+          raise Exit
+        );
+        match der.desc with
+        | Shift _ -> incr pos
+        | _ -> ()
+      in
+      pos := 0;
+      loop der
+    in
+    begin
+      try
+        find_pos false error.derivation;
+        find_pos true error.derivation
+      with Exit -> ()
+    end;
+    let kind, _ = error.error in
+    {error with error = (kind, Some !pos); path = !path}
   in
-  loop ()*)
+  (* Order by number of occurrences *)
+  let by_message =
+    Array.of_seq (Seq.map (fun (k, v) -> (k, List.length !v, !v))
+                    (Hashtbl.to_seq by_message))
+  in
+  Array.sort (fun (_,r1,_) (_,r2,_) -> Int.compare r2 r1) by_message;
+  (* Classify by item *)
+  let heap = Occurence_heap.make (Item.cardinal grammar) in
+  Array.iter (fun (message, _, errors) ->
+      Printf.printf "## %s (%d error%s)\n" message (List.length errors) (plural errors);
+      (* Errors by most frequent items *)
+      List.iter
+        (fun e -> Occurence_heap.add heap (snd e.error) e)
+        errors;
+      Seq.iter (fun (item, errors) ->
+          Printf.printf "\n### Item `%s` (in %d error%s)\n"
+            (Item.to_string grammar item)
+            (List.length errors) (plural errors);
+          report_error_samples ~with_comment:false
+            (List.map (annotate_with_item item) errors);
+        ) (Occurence_heap.pop_seq heap)
+    ) by_message;
+  Printf.printf "\n"
 
 let () =
   let output_with_comments oc =
@@ -1070,5 +1160,6 @@ let () =
       |> Array.of_seq
     in
     report_syntax_errors derivations sources outcome;
+    report_comment_dropped derivations sources outcome;
     report_internal_errors derivations sources outcome;
   )
