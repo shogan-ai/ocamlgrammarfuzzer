@@ -839,10 +839,7 @@ let prepare_message lines =
   in
   List.map cleanup_comment (split_code_delimiter lines)
 
-let report_error_class prepare_message item errors =
-  let errors =
-    List.map (fun err -> {err with error = prepare_message err.error}) errors
-  in
+let report_error_class item errors =
   let plural = function
     | [] | [_] -> ""
     | _ -> "s"
@@ -895,6 +892,87 @@ let report_error_class prepare_message item errors =
     Printf.eprintf "\n"
   end
 
+let report_syntax_errors derivations sources outcome =
+  let count = Array.length derivations in
+  (* Classify syntax errors *)
+  Printf.eprintf "# Syntax errors\n\n";
+  let occurrences = Occurence_heap.make (Item.cardinal grammar) in
+  for i = 0 to count - 1 do
+    let _, locations, _ = sources.(i) in
+    List.iter begin function
+      | Ocamlformat.Error.Internal _ -> ()
+      | Syntax error ->
+        assert (error.line = 1);
+        let pos = find_erroneous_token locations error.start_col in
+        match derivations.(i).Derivation.desc with
+        | Expand {expansion; reduction} ->
+          let derivation = Derivation.items_of_expansion grammar ~expansion ~reduction in
+          let _cell, path = Derivation.get_cell derivation pos in
+          Occurence_heap.add occurrences (IndexSet.of_list path) {derivation; error; path}
+        | _ -> assert false
+    end outcome.(i)
+  done;
+  let rec loop () =
+    (* Errors by most frequent items *)
+    match Occurence_heap.pop occurrences with
+    | None -> ()
+    | Some (item, errors) ->
+      report_error_class
+        item
+        (List.map (fun e -> {e with error = e.error.Ocamlformat.Error.message}) errors);
+      loop ()
+  in
+  loop ()
+
+let report_internal_errors derivations sources outcome =
+  let count = Array.length derivations in
+  (* Classify internal errors *)
+  Printf.eprintf "\n# Internal errors\n\n";
+  let occurrences = Occurence_heap.make (Item.cardinal grammar) in
+  for i = 0 to count - 1 do
+    List.iter begin function
+      | Ocamlformat.Error.Syntax _ -> ()
+      | Internal message ->
+        match derivations.(i).Derivation.desc with
+        | Expand {expansion; reduction} ->
+          let derivation = Derivation.items_of_expansion grammar ~expansion ~reduction in
+          let items = ref IndexSet.empty in
+          let rec register der =
+            let _cell, path = Derivation.cell der in
+            items := IndexSet.union (IndexSet.of_list path) !items;
+            Derivation.iter_sub register der
+          in
+          register derivation;
+          Occurence_heap.add occurrences !items (derivation, message);
+        | _ -> assert false
+    end outcome.(i)
+  done;
+  let rec loop () =
+    (* Errors by most frequent items *)
+    match Occurence_heap.pop occurrences with
+    | None -> ()
+    | Some (item, errors) ->
+      let prepare_error (derivation, error) =
+        let path = ref [] in
+        begin try
+            let rec find_path der =
+              let _, path' = Derivation.cell der in
+              Derivation.iter_sub find_path der;
+              if List.mem item path' then (
+                path := path';
+                raise Exit
+              )
+            in
+            find_path derivation
+          with Exit -> ()
+        end;
+        {derivation; error = [error]; path = !path}
+      in
+      report_error_class item (List.map prepare_error errors);
+      loop ()
+  in
+  loop ()
+
 let () =
   let output_with_comments oc =
     let count = ref 0 in
@@ -932,7 +1010,6 @@ let () =
     end derivations
   ) else (
     let derivations = Array.of_seq derivations in
-    let count = Array.length derivations in
     let sources =
       Array.map (prepare_derivation_for_check ~with_comments:!opt_comments) derivations
     in
@@ -942,80 +1019,6 @@ let () =
       |> Ocamlformat.check ~ocamlformat_command:!opt_ocamlformat ~jobs:8
       |> Array.of_seq
     in
-    (* Classify syntax errors *)
-    Printf.eprintf "# Syntax errors\n\n";
-    let occurrences = Occurence_heap.make (Item.cardinal grammar) in
-    for i = 0 to count - 1 do
-      let _, locations, _ = sources.(i) in
-      List.iter begin function
-        | Ocamlformat.Error.Internal _ -> ()
-        | Syntax error ->
-          assert (error.line = 1);
-          let pos = find_erroneous_token locations error.start_col in
-          match derivations.(i).desc with
-          | Expand {expansion; reduction} ->
-            let derivation = Derivation.items_of_expansion grammar ~expansion ~reduction in
-            let _cell, path = Derivation.get_cell derivation pos in
-            Occurence_heap.add occurrences (IndexSet.of_list path) {derivation; error; path}
-          | _ -> assert false
-      end outcome.(i)
-    done;
-    let rec loop () =
-      (* Errors by most frequent items *)
-      match Occurence_heap.pop occurrences with
-      | None -> ()
-      | Some (item, errors) ->
-        report_error_class
-          (fun error -> prepare_message error.Ocamlformat.Error.message)
-          item errors;
-        loop ()
-    in
-    loop ();
-    (* Classify internal errors *)
-    Printf.eprintf "\n# Internal errors\n\n";
-    let occurrences = Occurence_heap.make (Item.cardinal grammar) in
-    for i = 0 to count - 1 do
-      List.iter begin function
-        | Ocamlformat.Error.Syntax _ -> ()
-        | Internal message ->
-          match derivations.(i).desc with
-          | Expand {expansion; reduction} ->
-            let derivation = Derivation.items_of_expansion grammar ~expansion ~reduction in
-            let items = ref IndexSet.empty in
-            let rec register der =
-              let _cell, path = Derivation.cell der in
-              items := IndexSet.union (IndexSet.of_list path) !items;
-              Derivation.iter_sub register der
-            in
-            register derivation;
-            Occurence_heap.add occurrences !items (derivation, message);
-          | _ -> assert false
-      end outcome.(i)
-    done;
-    let rec loop () =
-      (* Errors by most frequent items *)
-      match Occurence_heap.pop occurrences with
-      | None -> ()
-      | Some (item, errors) ->
-        let prepare_error (derivation, error) =
-          let path = ref [] in
-          begin try
-              let rec find_path der =
-                let _, path' = Derivation.cell der in
-                Derivation.iter_sub find_path der;
-                if List.mem item path' then (
-                  path := path';
-                  raise Exit
-                )
-              in
-              find_path derivation
-            with Exit -> ()
-          end;
-          {derivation; error; path = !path}
-        in
-        report_error_class (fun msg -> [msg])
-          item (List.map prepare_error errors);
-        loop ()
-    in
-    loop ()
+    report_syntax_errors derivations sources outcome;
+    report_internal_errors derivations sources outcome;
   )
