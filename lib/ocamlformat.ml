@@ -34,8 +34,8 @@ module Output_parser = struct
      > File "%s", line %d, characters %d-%d:
 
      Followed by an optional quotation of problematic source:
-     > %d| ... problem ...
-              ^^^^^^^
+     > %d | ... problem ...
+                ^^^^^^^
 
      Terminated by:
      > Error: %s
@@ -55,19 +55,18 @@ module Output_parser = struct
       {|File %S, line %d, characters %d-%d:|}
       (fun input line start_col end_col ->
          let match_terminator text =
-           match Scanf.sscanf_opt text "%d|%s" (fun _ _ -> ()) with
+           match Scanf.sscanf_opt text "%d | %s" (fun _ _ -> ()) with
            | Some _ -> None
            | None ->
              match Scanf.sscanf_opt text "Error: comment (*  C%d  *) dropped." (fun d -> d) with
              | Some d -> Some (Some (input, Error.Comment_dropped d))
              | None ->
-               match Scanf.sscanf_opt text "Error: %s" (fun msg -> msg) with
-               | Some message -> Some (Some (input, Error.Syntax {line; start_col; end_col; message}))
-               | None ->
-                 if String.starts_with ~prefix:"  This "  text then
-                   Some None
-                 else
-                   failwithf "Unexpected line %S" text
+               if String.starts_with ~prefix:"Error: " text then
+                 Some (Some (input, Error.Syntax {line; start_col; end_col; message=text}))
+               else if String.starts_with ~prefix:"  This "  text then
+                 Some None
+               else
+                 failwithf "Unexpected line %S" text
          in
          match match_terminator (input_line ic) with
          | Some result -> result
