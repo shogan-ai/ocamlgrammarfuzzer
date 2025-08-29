@@ -1,5 +1,7 @@
 open Utils.Misc
 
+let debug = false
+
 module Error = struct
   type syntax = {
     line : int;
@@ -25,6 +27,12 @@ module Error = struct
       Printf.sprintf "comment error: comment %d dropped"
         index
 end
+
+let input_line ic =
+  let result = input_line ic in
+  if debug then
+    Printf.eprintf "> %s\n" result;
+  result
 
 module Output_parser = struct
 
@@ -193,7 +201,7 @@ let batch_size = 80
 let temp_dir = Filename.get_temp_dir_name ()
 
 let temp_path id i ext =
-  Printf.sprintf "%s/ocamlgrammarfuzzer_%d-%d.%s" temp_dir id i ext
+  Filename.concat temp_dir (Printf.sprintf "ocamlgrammarfuzzer_%d-%d.%s" id i ext)
 
 let temp_path_index name =
   let name = Filename.remove_extension (Filename.basename name) in
@@ -215,6 +223,8 @@ let start_batch ~ocamlformat_command = function
         output_string oc source;
         output_char oc '\n';
         close_out oc;
+        if debug then
+          Printf.eprintf "<%s: %s\n" path source;
         path
       ) inputs
     in
