@@ -901,14 +901,15 @@ let report_error_samples ~with_comment errors =
       Buffer.add_string buf text;
       if !i = sample.error then (
         hilight := (startp, Buffer.length buf)
-      )
+      );
+      incr i
     in
     Derivation.iter_terminals sample.derivation
       ~f:(fun t ->
           if !i = sample.error && with_comment then
             add_text "(* ... *)";
-          incr i;
-          add_text terminal_text.:(t));
+          add_text terminal_text.:(t);
+        );
     Printf.printf "  %s\n" (Buffer.contents buf);
     begin match !hilight with
       | (s, e) when e > s ->
