@@ -61,7 +61,7 @@ let rec get_meta t i =
   match t.desc with
   | Expand {expansion; _} -> get_meta expansion i
   | Null | Shift _ ->
-    (*if i > 0 then raise Not_found;*)
+    if i > 0 then raise Not_found;
     t.meta
   | Node {left; right; _} ->
     let len = length left in
@@ -121,24 +121,26 @@ let unroll_path der = function
   | In_expansion {reduction; meta} ->
     expand meta der reduction
 
-let items_of_expansion _g ~expansion:_ ~reduction:_ =
-  failwith "TODO"
-  (*let rec aux parents prod pos t =
-    let item = Item.make g prod pos in
-    let meta = (t.meta, parents) in
+let items_of_expansion g ~expansion ~reduction =
+  let rec aux prefix prod pos suffix t =
     match t.desc with
     | Null | Shift _ as desc ->
+      let prefix = Item.make g prod pos :: prefix in
+      let suffix = Item.make g prod (pos + 1) :: suffix in
+      let meta = (prefix, t.meta, suffix) in
       pos + 1, {meta; desc}
     | Expand e ->
-      let parents = if pos = 0 then item :: parents else [item] in
-      let _, expansion = aux parents e.reduction.production 0 e.expansion in
+      let prefix = Item.make g prod pos :: prefix in
+      let suffix = Item.make g prod (pos + 1) :: suffix in
+      let meta = (prefix, t.meta, suffix) in
+      let _, expansion = aux prefix e.reduction.production 0 suffix e.expansion in
       pos + 1, {meta; desc = Expand {e with expansion}}
     | Node n ->
-      let meta = (t.meta, []) in
-      let pos, left = aux parents prod pos n.left in
-      let pos, right = aux [] prod pos n.right in
+      let meta = ([], t.meta, []) in
+      let pos, left = aux prefix prod pos [] n.left in
+      let pos, right = aux [] prod pos suffix n.right in
       pos, {meta; desc = Node {n with left; right}}
   in
   let {Reachability.production; _} = reduction in
-  let _ , der = aux [] production 0 expansion in
-    der*)
+  let _ , der = aux [] production 0 [] expansion in
+  der
