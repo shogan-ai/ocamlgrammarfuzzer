@@ -677,9 +677,9 @@ let prepare_derivation_for_check ~with_comments der =
 
 let find_erroneous_token locations (startp, endp) =
   let tok_loc (startp', _ : int * int) = startp' >= startp in
-  match Array.find_index tok_loc locations.tokens with
+  match Array.find_index tok_loc locations with
   | Some i ->
-    let startp', endp' = locations.tokens.(i) in
+    let startp', endp' = locations.(i) in
     if startp = startp' then
       if endp = endp' then
         Some i
@@ -692,8 +692,8 @@ let find_erroneous_token locations (startp, endp) =
           startp endp startp' endp';
         None
       )
-    else if i < Array.length locations.comments then
-      let startp', endp' = locations.comments.(i) in
+    else if i < Array.length locations then
+      let startp', endp' = locations.(i) in
       if startp = startp' then
         Some i
       else if endp = endp' - 1 then (
@@ -711,103 +711,6 @@ let find_erroneous_token locations (startp, endp) =
       None
     )
   | None -> None
-
-module Occurence_heap : sig
-  type ('n, 'a) t
-  val make : 'n cardinal -> ('n, 'a) t
-  val add : ('n, 'a) t -> 'n indexset -> 'a -> unit
-  val pop : ('n, 'a) t -> ('n index * 'a list) option
-  val pop_seq : ('n, 'a) t -> ('n index * 'a list) Seq.t
-end = struct
-
-  type ('n, 'a) elt = {
-    payload: 'a;
-    mutable active: bool;
-    occurrences: 'n indexset;
-  }
-
-  type ('n, 'a) t = {
-    table: ('n, ('n, 'a) elt list) vector;
-    outdated: 'n Boolvector.t;
-    mutable todo : 'n indexset;
-    mutable ranks : 'n indexset IntMap.t;
-  }
-
-  let make n = {
-    table = Vector.make n [];
-    outdated = Boolvector.make n false;
-    todo = IndexSet.empty;
-    ranks = IntMap.empty;
-  }
-
-  let mark_todo t occ =
-    if not (Boolvector.test t.outdated occ) then (
-      begin match List.length t.table.:(occ) with
-        | 0 -> ()
-        | count ->
-          t.ranks <- IntMap.update count (function
-              | None -> assert false
-              | Some set ->
-                let set' = IndexSet.remove occ set in
-                assert (set != set');
-                if IndexSet.is_empty set'
-                then None
-                else Some set'
-            ) t.ranks
-      end;
-      Boolvector.set t.outdated occ;
-      t.todo <- IndexSet.add occ t.todo
-    )
-
-  let add t occurrences payload =
-    let elt = {payload; occurrences; active = true} in
-    IndexSet.iter
-      (fun occ -> mark_todo t occ; t.table.@(occ) <- List.cons elt)
-      occurrences
-
-  let reindex t =
-    let todo = t.todo in
-    t.todo <- IndexSet.empty;
-    IndexSet.iter begin fun occ ->
-      Boolvector.clear t.outdated occ;
-      let elts = Misc.list_rev_filter (fun elt -> elt.active) t.table.:(occ) in
-      t.table.:(occ) <- elts;
-      match List.length elts with
-      | 0 -> ()
-      | count ->
-        t.ranks <- IntMap.update count (function
-            | None -> Some (IndexSet.singleton occ)
-            | Some set -> Some (IndexSet.add occ set)
-          ) t.ranks
-    end todo
-
-  let pop t =
-    reindex t;
-    match IntMap.max_binding_opt t.ranks with
-    | None -> None
-    | Some (_, occs) ->
-      let occ = IndexSet.choose occs in
-      let elts =
-        List.rev_map (fun elt ->
-            assert elt.active;
-            elt.active <- false;
-            IndexSet.iter (mark_todo t) elt.occurrences;
-            elt.payload
-          ) t.table.:(occ)
-      in
-      Some (occ, elts)
-
-  let pop_seq t =
-    let rec self () =
-      match pop t with
-      | None -> Seq.Nil
-      | Some x ->
-        Seq.Cons (x, self)
-    in
-    self
-end
-
-let _ = Occurence_heap.pop
 
 type 'a error = {
   path: g item index list;
@@ -987,26 +890,26 @@ let report_syntax_errors derivations sources outcome =
   in
   Array.sort (fun (_,r1,_) (_,r2,_) -> Int.compare r2 r1) by_message;
   (* Classify by item *)
-  let heap = Occurence_heap.make (Item.cardinal grammar) in
+  let heap = Occurrence_heap.make (Item.cardinal grammar) in
   Array.iter (fun (message, _, errors) ->
       Printf.printf "## %s\n" message;
       (* Errors by most frequent items *)
       List.iter
-        (fun e -> Occurence_heap.add heap (IndexSet.of_list e.path) e)
+        (fun e -> Occurrence_heap.add heap (IndexSet.of_list e.path) e)
         errors;
       Seq.iter (fun (item, errors) ->
           Printf.printf "\n### Item `%s` (in %d error%s)\n\n"
             (Item.to_string grammar item)
             (List.length errors) (plural errors);
           report_error_samples ~with_comment:false errors;
-        ) (Occurence_heap.pop_seq heap)
+        ) (Occurrence_heap.pop_seq heap)
     ) by_message;
   Printf.printf "\n"
 
 let report_comment_dropped derivations sources outcome =
   Printf.printf "# Comment dropped\n\n";
   (* Classify by item *)
-  let heap = Occurence_heap.make (Item.cardinal grammar) in
+  let heap = Occurrence_heap.make (Item.cardinal grammar) in
   for i = 0 to Array.length derivations - 1 do
     let kind, _locations, _text = sources.(i) in
     List.iter begin function
@@ -1019,7 +922,7 @@ let report_comment_dropped derivations sources outcome =
         in
         let derivation = Derivation.items_of_expansion grammar ~expansion ~reduction in
         let path, _cell, _path = Derivation.get_meta derivation pos in
-        Occurence_heap.add heap (IndexSet.of_list path)
+        Occurrence_heap.add heap (IndexSet.of_list path)
           {derivation; error = (kind, Some pos); path}
     end outcome.(i)
   done;
@@ -1029,7 +932,7 @@ let report_comment_dropped derivations sources outcome =
         (Item.to_string grammar item)
         (List.length errors) (plural errors);
       report_error_samples ~with_comment:true errors;
-    ) (Occurence_heap.pop_seq heap);
+    ) (Occurrence_heap.pop_seq heap);
   Printf.printf "\n"
 
 let report_internal_errors derivations sources outcome =
@@ -1127,12 +1030,12 @@ let report_internal_errors derivations sources outcome =
   in
   Array.sort (fun (_,r1,_) (_,r2,_) -> Int.compare r2 r1) by_message;
   (* Classify by item *)
-  let heap = Occurence_heap.make (Item.cardinal grammar) in
+  let heap = Occurrence_heap.make (Item.cardinal grammar) in
   Array.iter (fun (message, _, errors) ->
       Printf.printf "## %s (%d error%s)\n" message (List.length errors) (plural errors);
       (* Errors by most frequent items *)
       List.iter
-        (fun e -> Occurence_heap.add heap (snd e.error) e)
+        (fun e -> Occurrence_heap.add heap (snd e.error) e)
         errors;
       Seq.iter (fun (item, errors) ->
           Printf.printf "\n### Item `%s` (in %d error%s)\n\n"
@@ -1140,7 +1043,7 @@ let report_internal_errors derivations sources outcome =
             (List.length errors) (plural errors);
           report_error_samples ~with_comment:false
             (List.map (annotate_with_item item) errors);
-        ) (Occurence_heap.pop_seq heap)
+        ) (Occurrence_heap.pop_seq heap)
     ) by_message;
   Printf.printf "\n"
 
