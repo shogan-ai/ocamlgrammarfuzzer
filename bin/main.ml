@@ -632,85 +632,232 @@ let entrypoint_of_derivation der =
     | R _ -> assert false
     | L tr -> Transition.symbol grammar tr
 
-let prepare_derivation_for_check ~with_comments der =
-  let buf = Buffer.create 31 in
-  let comments = ref 0 in
-  let add_comment () =
-    if Buffer.length buf > 0 then
-      Buffer.add_char buf ' ';
-    Printf.bprintf buf "(* C%d *)" !comments;
-    incr comments
-  in
-  let locations = ref [] in
-  let add_terminal terminal =
-    match terminal_text.:(terminal) with
-    | "" -> () (* ignore EOF *)
-    | text ->
-      if with_comments then add_comment ();
-      let startp = match Buffer.length buf with
-        | 0 -> 0
-        | n -> Buffer.add_char buf ' '; (n + 1)
-      in
-      Buffer.add_string buf text;
-      let endp = Buffer.length buf in
-      push locations (startp, endp)
-  in
-  Derivation.iter_terminals ~f:add_terminal der;
-  if with_comments then add_comment ();
-  let locations =
-    Array.of_list (List.rev !locations)
-  in
-  let kind =
-    let entrypoint = entrypoint_of_derivation der in
-    match Symbol.name grammar entrypoint with
-    | "implementation" -> `Impl
-    | "interface" -> `Intf
-    | name ->
-      if report_invalid_entrypoint entrypoint then
-        Syntax.warn Lexing.dummy_pos
-          "ocamlformat-check: invalid entrypoint %s, \
-           only implementation and interface are supported"
-          name;
-      `Impl
-  in
-  (kind, locations, Buffer.contents buf)
+(* Code generation and location mapping.
 
-let find_erroneous_token locations (startp, endp) =
-  let tok_loc (startp', _ : int * int) = startp' >= startp in
-  match Array.find_index tok_loc locations with
-  | Some i ->
-    let startp', endp' = locations.(i) in
-    if startp = startp' then
-      if endp = endp' then
-        Some i
-      else if endp = endp' - 1 then (
-        Printf.eprintf "off-by-one in token location: error at %d-%d, token at %d-%d\n"
-          startp endp startp' endp';
-        None
+   Looking at the locations reported by Ocamlformat can reveal a lot of information.
+   We can distinguish many cases:
+   - error location coincides exactly with a token   -> raw syntax error
+   - error location coincides exactly with a comment -> comment error
+   - location matches a prefix of a token            -> lexer error
+   - location matches exactly a range of tokens      -> syntax invariant error
+   - location doesn't match the input                -> "red herring" error
+
+   The last case, red herring, occurs when ocamlformat fails while looking for a
+   fixed point: it successfully formats the input once, then try to process its
+   own output and fail with an unexpected error that causes it to report a
+   location referring to the formatted source, not to the input.
+
+   It is a red herring because there are no direct way to tell that the location
+   refers to another file, hidden from the end-user.
+
+   A red herring error could also be missed if its location accidentally matches
+   a valid input location.
+   To avoid this case, we pad the inputs with many spaces to make it very
+   unlikely for any formatted output to have overlapping locations.
+*)
+module Source_printer : sig
+  type t
+  val make : with_comments:bool -> unit -> t
+  val add_terminal : t -> string -> unit
+
+  type source = string
+  type locations
+
+  val flush : t -> locations * source
+
+  type error_kind =
+    | Syntax
+    | Comment
+    | Lexer
+    | Syntactic_invariant
+    | Red_herring
+
+  val classify_error_location : locations -> Ocamlformat.Error.syntax -> error_kind * int
+end = struct
+  let padding = String.make 90 ' '
+
+  type location = int * int
+
+  type t = {
+    buffer: Buffer.t;
+    mutable comments: int;
+    mutable token_locations: location list;
+    mutable comment_locations: location list;
+  }
+
+  let make ~with_comments () = {
+    comments = if with_comments then 0 else (-1);
+    buffer = Buffer.create 63;
+    token_locations = [];
+    comment_locations = [];
+  }
+
+  let startp t =
+    match Buffer.length t.buffer with
+    | 0 ->
+      Buffer.add_string t.buffer padding;
+      Buffer.length t.buffer
+    | n ->
+      Buffer.add_char t.buffer ' ';
+      (n + 1)
+
+  let endp t = Buffer.length t.buffer
+
+  let add_comment t =
+    match t.comments with
+    | -1 -> ()
+    | number ->
+      t.comments <- number + 1;
+      let startp = startp t in
+      Printf.bprintf t.buffer "(* C%d *)" number;
+      let endp = endp t in
+      t.comment_locations <- (startp, endp) :: t.comment_locations
+
+  let add_terminal t = function
+    | "" -> ()
+    | text ->
+      add_comment t;
+      let startp = startp t in
+      Buffer.add_string t.buffer text;
+      let endp = endp t in
+      t.token_locations <- (startp, endp) :: t.token_locations
+
+  type source = string
+
+  type locations = {
+    tokens: (int * int) array;
+    comments: (int * int) array;
+  }
+
+  let flush t =
+    add_comment t;
+    let source = Buffer.contents t.buffer in
+    Buffer.clear t.buffer;
+    if t.comments > -1 then
+      t.comments <- 0;
+    let prepare_locations l = Array.of_list (List.rev l) in
+    let tokens = prepare_locations t.token_locations in
+    let comments = prepare_locations t.comment_locations in
+    t.token_locations <- [];
+    t.comment_locations <- [];
+    ({tokens; comments}, source)
+
+  type error_kind =
+    | Syntax
+    | Comment
+    | Lexer
+    | Syntactic_invariant
+    | Red_herring
+
+  let classify_error_location l {Ocamlformat.Error. line; start_col; end_col; _} =
+    if line <> 1 then
+      (Red_herring, Array.length l.tokens)
+    else
+      let find_start (startp, _) = start_col = startp in
+      let find_end (_, endp) = end_col = endp in
+      let find_exact (startp, endp) = start_col = startp && end_col = endp in
+      match Array.find_index find_start l.tokens with
+      | Some i ->
+        let _, endp = l.tokens.(i) in
+        if end_col = endp then
+          (* Exact token match: raw syntax error *)
+          (Syntax, i)
+        else if end_col < endp then
+          (* Prefix token match: lexer error *)
+          (Lexer, i)
+        else if Array.exists find_end l.tokens then
+          (* Range match: likely a syntactic invariant *)
+          (Syntactic_invariant, i)
+        else
+          (Red_herring, Array.length l.tokens)
+      | None ->
+        begin match Array.find_index find_exact l.comments with
+          | Some i ->
+            (* Exact comment match: comment (likely dropped) error *)
+            (Comment, i)
+          | None ->
+            (* No match: red herring! *)
+            (Red_herring, Array.length l.tokens)
+        end
+end
+
+module Sample_sentence_printer : sig
+  type t
+
+  val make : with_comment:bool -> position:int option -> t
+  val add_terminal : t -> string -> unit
+  val flush : t -> string list
+end = struct
+  type t = {
+    with_comment: bool;
+    position: int;
+    buffer: Buffer.t;
+    mutable count: int;
+    mutable startp: int;
+    mutable endp: int;
+  }
+
+  let make ~with_comment ~position = {
+    with_comment;
+    position = Option.value position ~default:(-1);
+    buffer = Buffer.create 31;
+    count = 0;
+    startp = 0;
+    endp = 0;
+  }
+
+  let startp t =
+    match Buffer.length t.buffer with
+    | 0 -> 0
+    | n -> Buffer.add_char t.buffer ' '; (n + 1)
+
+  let add_terminal t text =
+    if t.count = -1 then
+      invalid_arg "Sample_sentence_printer.add_terminal: buffer already flushed";
+    if text <> "" then (
+      let startp = startp t in
+      if t.position = t.count then (
+        t.startp <- startp;
+        Buffer.add_string t.buffer (if t.with_comment then "(* ... *)" else text);
+        t.endp <- Buffer.length t.buffer;
+        if t.with_comment then (
+          Buffer.add_char t.buffer ' ';
+          Buffer.add_string t.buffer text
+        )
       ) else (
-        Printf.eprintf "invalid token location: error at %d-%d, token at %d-%d\n"
-          startp endp startp' endp';
-        None
-      )
-    else if i < Array.length locations then
-      let startp', endp' = locations.(i) in
-      if startp = startp' then
-        Some i
-      else if endp = endp' - 1 then (
-        Printf.eprintf "off-by-one in comment location: error at %d-%d, token at %d-%d\n"
-          startp endp startp' endp';
-        None
-      ) else (
-        Printf.eprintf "invalid comment location: error at %d-%d, token at %d-%d\n"
-          startp endp startp' endp';
-        None
-      )
-    else (
-      Printf.eprintf "invalid error location: error at %d-%d, closest token at %d-%d\n"
-        startp endp startp' endp';
-      None
+        Buffer.add_string t.buffer text
+      );
+      t.count <- t.count + 1
     )
-  | None -> None
+
+  let flush t =
+    if t.position >= t.count then
+      invalid_arg "Sample_sentence_printer.flush: sentence is incomplete";
+    let source = Buffer.contents t.buffer in
+    if t.endp > t.startp then
+      [source; String.make t.startp ' ' ^ String.make (t.endp - t.startp) '^']
+    else
+      [source]
+end
+
+let derivation_kind der =
+  let entrypoint = entrypoint_of_derivation der in
+  match Symbol.name grammar entrypoint with
+  | "implementation" -> `Impl
+  | "interface" -> `Intf
+  | name ->
+    if report_invalid_entrypoint entrypoint then
+      Syntax.warn Lexing.dummy_pos
+        "ocamlformat-check: invalid entrypoint %s, \
+         only implementation and interface are supported"
+        name;
+    `Impl
+
+let prepare_derivation_for_check printer der =
+  Derivation.iter_terminals der
+    ~f:(fun t -> Source_printer.add_terminal printer terminal_text.:(t));
+  let locations, source = Source_printer.flush printer in
+  (derivation_kind der, locations, source)
 
 type 'a error = {
   path: g item index list;
@@ -719,64 +866,6 @@ type 'a error = {
                            g item index list) Derivation.t;
   error: 'a;
 }
-
-(* Some messages contain a comment.
-   They are noise when trying to classify problems, so let's remove them. *)
-
-(*let cleanup_comment str =
-  let l = String.length str in
-  let b = Buffer.create l in
-  let i = ref 0 in
-  while !i < l - 6 do
-    let i0 = !i in
-    let c = str.[i0] in
-    if c = '(' && str.[i0 + 1] = '*' then (
-      i := i0 + 2;
-
-      while !i < l - 3 && str.[!i] = ' ' do
-        incr i
-      done;
-
-      if str.[!i] = 'C' then (
-        incr i;
-        while !i < l - 2 && let c = str.[!i] in c >= '0' && c <= '9' do
-          incr i
-        done;
-        while !i < l - 2 && str.[!i] = ' ' do
-          incr i
-        done;
-        if str.[!i] = '*' && str.[!i+1] = ')' then (
-          i := !i + 2;
-          Buffer.add_string b "(* ... *)"
-        ) else (
-          Buffer.add_substring b str i0 (!i - i0);
-        )
-      ) else (
-        Buffer.add_substring b str i0 (!i - i0)
-      )
-    ) else (
-      Buffer.add_char b c;
-      incr i
-    )
-  done;
-  Buffer.add_substring b str !i (l - !i);
-  Buffer.contents b
-
-let prepare_message lines =
-  let rec split_code_delimiter = function
-    | [] -> lines
-    | x :: xs ->
-      let found = ref false in
-      if String.for_all (fun c ->
-          if c = '^' then (found := true; true)
-          else if c = ' ' then not !found
-          else false
-        ) x
-      then xs
-      else
-        split_code_delimiter xs
-  in
-  List.map cleanup_comment (split_code_delimiter lines) *)
 
 let plural = function
   | [] | [_] -> ""
@@ -822,31 +911,10 @@ let report_error_samples ~with_comment errors =
     Printf.printf "  Sample sentence (%s):\n"
       (match kind with `Impl -> "implementation" | `Intf -> "interface");
     Printf.printf "  ```ocaml\n";
-    let i = ref 0 in
-    let buf = Buffer.create 31 in
-    let hilight = ref (0,0) in
-    let add_text text =
-      let startp = match Buffer.length buf with
-        | 0 -> 0
-        | n -> Buffer.add_char buf ' '; n + 1
-      in
-      Buffer.add_string buf text;
-      if Some !i = position then
-        hilight := (startp, Buffer.length buf);
-      incr i
-    in
+    let printer = Sample_sentence_printer.make ~with_comment ~position in
     Derivation.iter_terminals sample.derivation
-      ~f:(fun t ->
-          if Some !i = position && with_comment then
-            add_text "(* ... *)";
-          add_text terminal_text.:(t);
-        );
-    Printf.printf "  %s\n" (Buffer.contents buf);
-    begin match !hilight with
-      | (s, e) when e > s ->
-        Printf.printf "  %s%s\n" (String.make s ' ') (String.make (e-s) '^')
-      | _ -> ()
-    end;
+      ~f:(fun t -> Sample_sentence_printer.add_terminal printer terminal_text.:(t));
+    List.iter (Printf.printf "  %s\n") (Sample_sentence_printer.flush printer);
     Printf.printf "  ```\n";
   end;
   Printf.printf "\n"
@@ -860,15 +928,12 @@ let report_syntax_errors derivations sources outcome =
     List.iter begin function
       | Ocamlformat.Error.Internal _
       | Comment_dropped _ -> ()
-      | Syntax error when error.line <> 1 ->
-        Printf.eprintf "Internal error: unexpected error at %d.%d-%d (sentence: %S)\n"
-          error.line error.start_col error.end_col text
       | Syntax error ->
-        match find_erroneous_token locations (error.start_col, error.end_col) with
-        | None ->
+        match Source_printer.classify_error_location locations error with
+        | Source_printer.Red_herring, _ ->
           Printf.eprintf "Invalid error report: unexpected error at %d.%d-%d (sentence: %S)\n"
             error.line error.start_col error.end_col text
-        | Some pos ->
+        | _, pos ->
           let expansion, reduction =
             match derivations.(i).Derivation.desc with
             | Expand {expansion; reduction} -> (expansion, reduction)
@@ -1085,7 +1150,8 @@ let () =
   ) else (
     let derivations = Array.of_seq derivations in
     let sources =
-      Array.map (prepare_derivation_for_check ~with_comments:!opt_comments) derivations
+      let printer = Source_printer.make ~with_comments:!opt_comments () in
+      Array.map (prepare_derivation_for_check printer) derivations
     in
     let outcome =
       Array.to_seq sources
