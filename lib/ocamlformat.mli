@@ -19,5 +19,6 @@ end
 val check :
   ?ocamlformat_command:string ->
   ?jobs:int ->
+  ?batch_size:int ->
   ([`Impl | `Intf] * string) Seq.t ->
   Error.t list Seq.t

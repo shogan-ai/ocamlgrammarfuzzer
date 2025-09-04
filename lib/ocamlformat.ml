@@ -200,7 +200,7 @@ end
 
 let check_command = ["--check"; "--enable-outside-detected-project"]
 
-let batch_size = 80
+let default_batch_size = 80
 
 let temp_dir = Filename.get_temp_dir_name ()
 
@@ -295,7 +295,11 @@ let overlapping_force jobs seq =
   in
   reconstruct queue seq
 
-let check ?(ocamlformat_command="ocamlformat") ?(jobs=0) seq =
+let check
+    ?(ocamlformat_command="ocamlformat")
+    ?(jobs=0) ?(batch_size=default_batch_size)
+    seq
+  =
   seq
   |> (* Group by batches of appropriate size *)
   batch_by ~size:batch_size

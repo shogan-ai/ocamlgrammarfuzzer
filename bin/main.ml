@@ -17,6 +17,8 @@ let opt_focus = ref []
 let opt_exhaust = ref false
 let opt_ocamlformat_check = ref false
 let opt_ocamlformat = ref "ocamlformat"
+let opt_jobs = ref 8
+let opt_batch_size = ref 80
 
 let spec_list = [
   (* ("-n"         , Arg.Set_int opt_count, "<int> Number of lines to generate"  ); *)
@@ -36,6 +38,8 @@ let spec_list = [
   ("--exhaust", Arg.Set opt_exhaust, " Exhaust mode generates a deterministic set of sentences that cover all reachable constructions");
   ("--ocamlformat", Arg.Set_string opt_ocamlformat, " Path to OCamlformat command to use");
   ("--ocamlformat-check", Arg.Set opt_ocamlformat_check, " Check generated sentences with ocamlformat (default is to print them)");
+  ("--jobs", Arg.Set_int opt_jobs, " Number of ocamlformat processes to run in parallel (default: 8)");
+  ("--batch-size", Arg.Set_int opt_batch_size, " Number of files to submit to each ocamlformat process (default: 80)");
 ]
 
 let usage_msg = "Usage: ocamlgrammarfuzzer [options]"
@@ -669,23 +673,6 @@ let prepare_derivation_for_check ~with_comments der =
   in
   (kind, locations, Buffer.contents buf)
 
-(*List.iteri begin fun j -> function
-          | Ocamlformat.Error.Internal {message} ->
-            Printf.eprintf "- error %d is internal: %s\n" j message
-          | Syntax {line; char_range = (startp,endp); message} ->
-            Printf.eprintf "- error %d is syntactic at line %d columns %d.%d:\n"
-              j line startp endp;
-            Printf.eprintf "    %s\n"
-              (String.concat "\\n" message);
-            let tok_loc (startp', _) = startp' >= startp in
-            match Array.find_index tok_loc locations with
-            | Some i ->
-              Printf.eprintf "  happens at terminal %s\n"
-                terminal_text.:(Derivation.get_terminal der i)
-            | None ->
-              Printf.eprintf "  happens at the end of the sentence\n"
-          end errors*)
-
 let find_erroneous_token locations pos =
   let tok_loc (startp', _ : int * int) = startp' >= pos in
   match Array.find_index tok_loc locations with
@@ -1156,7 +1143,10 @@ let () =
     let outcome =
       Array.to_seq sources
       |> Seq.map (fun (k,_,s)  -> (k, s))
-      |> Ocamlformat.check ~ocamlformat_command:!opt_ocamlformat ~jobs:8
+      |> Ocamlformat.check
+        ~ocamlformat_command:!opt_ocamlformat
+        ~jobs:(Int.max 0 !opt_jobs)
+        ~batch_size:(Int.max 1 !opt_batch_size)
       |> Array.of_seq
     in
     report_syntax_errors derivations sources outcome;
