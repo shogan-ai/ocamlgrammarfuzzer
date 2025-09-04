@@ -832,9 +832,15 @@ end = struct
     )
 
   let flush t =
-    if t.position >= t.count then
-      invalid_arg "Sample_sentence_printer.flush: sentence is incomplete";
     let source = Buffer.contents t.buffer in
+    if t.position > t.count then
+      Printf.ksprintf invalid_arg "Sample_sentence_printer.flush: sentence is incomplete (error position:%d, with comment:%b, count:%d, text:%S)"
+        t.position t.with_comment t.count source;
+    if t.position = t.count then (
+      t.startp <- Buffer.length t.buffer + 1;
+      t.endp <- t.startp + 1
+    );
+    t.count <- -1;
     if t.endp > t.startp then
       [source; String.make t.startp ' ' ^ String.make (t.endp - t.startp) '^']
     else
