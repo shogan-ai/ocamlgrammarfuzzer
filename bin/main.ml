@@ -1270,26 +1270,27 @@ let () =
            The location is guessed by inspecting the syntactic constructions that appear \
            most frequently in the failing code.\n\n"
       end;
-    (*let valid = ref 0 in
+    let valid = ref 0 in
     let syntax_errors = ref 0 in
     let with_comments_dropped = ref 0 in
     let comments_dropped = ref 0 in
     let internal_errors = ref 0 in
-    Array.iter begin function
+    Array.iter begin fun (_, errors) ->
+      match errors with
       | [] -> incr valid;
       | errors ->
         let had_comments_dropped = ref false in
-        List.iter begin function
-          | Ocamlformat.Error.Internal _ ->
-            incr internal_errors
-          | Syntax _ ->
-            incr syntax_errors
-          | Comment_dropped _ ->
-            incr comments_dropped;
+        List.iter begin fun (kind, _, _) ->
+          match kind with
+          | Syntax | Lexer | Syntactic_invariant -> incr syntax_errors;
+          | Comment ->
             if not !had_comments_dropped then (
               incr with_comments_dropped;
               had_comments_dropped := true;
-            )
+            );
+            incr comments_dropped;
+          | Red_herring | Internal_error ->
+            incr internal_errors
         end errors
     end outcome;
     let count = Array.length outcome in
@@ -1303,5 +1304,5 @@ let () =
       !valid            (percent !valid)
       !syntax_errors    (percent !syntax_errors)
       !with_comments_dropped (percent !with_comments_dropped) !comments_dropped
-      !internal_errors  (percent !internal_errors); *)
+      !internal_errors  (percent !internal_errors);
   )
