@@ -638,7 +638,7 @@ let entrypoint_of_derivation der =
    We can distinguish many cases:
    - error location coincides exactly with a token   -> raw syntax error
    - error location coincides exactly with a comment -> comment error
-   - location matches a prefix of a token            -> lexer error
+   - location matches a subsequence of a token       -> lexer error
    - location matches exactly a range of tokens      -> syntax invariant error
    - location doesn't match the input                -> "red herring" error
 
@@ -753,23 +753,10 @@ end = struct
     if line <> 1 then
       (Red_herring, Array.length l.tokens)
     else
-      let find_start (startp, _) = start_col = startp in
+      let find_start (startp, endp) = startp <= start_col && start_col < endp in
       let find_end (_, endp) = end_col = endp in
       let find_exact (startp, endp) = start_col = startp && end_col = endp in
       match Array.find_index find_start l.tokens with
-      | Some i ->
-        let _, endp = l.tokens.(i) in
-        if end_col = endp then
-          (* Exact token match: raw syntax error *)
-          (Syntax, i)
-        else if end_col < endp then
-          (* Prefix token match: lexer error *)
-          (Lexer, i)
-        else if Array.exists find_end l.tokens then
-          (* Range match: likely a syntactic invariant *)
-          (Syntactic_invariant, i)
-        else
-          (Red_herring, Array.length l.tokens)
       | None ->
         begin match Array.find_index find_exact l.comments with
           | Some i ->
@@ -779,6 +766,20 @@ end = struct
             (* No match: red herring! *)
             (Red_herring, Array.length l.tokens)
         end
+      | Some i ->
+        let startp, endp = l.tokens.(i) in
+        if startp = start_col && end_col = endp then
+          (* Exact token match: raw syntax error *)
+          (Syntax, i)
+        else if end_col <= endp then
+          (* Subsequence token match: lexer error *)
+          (Lexer, i)
+        else if startp = start_col && Array.exists find_end l.tokens then
+          (* Range match: likely a syntactic invariant *)
+          (Syntactic_invariant, i)
+        else
+          (* No match either *)
+          (Red_herring, Array.length l.tokens)
 end
 
 module Sample_sentence_printer : sig
