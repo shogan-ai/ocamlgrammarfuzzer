@@ -16,9 +16,13 @@ module Error : sig
   val to_string : t -> string
 end
 
+type source_kind =
+  | Impl
+  | Intf
+
 val check :
   ?ocamlformat_command:string ->
   ?jobs:int ->
   ?batch_size:int ->
-  ([`Impl | `Intf] * string) Seq.t ->
+  (source_kind * string) Seq.t ->
   Error.t list Seq.t

@@ -850,15 +850,15 @@ end
 let derivation_kind der =
   let entrypoint = entrypoint_of_derivation der in
   match Symbol.name grammar entrypoint with
-  | "implementation" -> `Impl
-  | "interface" -> `Intf
+  | "implementation" -> Ocamlformat.Impl
+  | "interface" -> Ocamlformat.Intf
   | name ->
     if report_invalid_entrypoint entrypoint then
       Syntax.warn Lexing.dummy_pos
         "ocamlformat-check: invalid entrypoint %s, \
          only implementation and interface are supported"
         name;
-    `Impl
+    Ocamlformat.Impl
 
 let prepare_derivation_for_check printer der =
   Derivation.iter_terminals der
@@ -891,7 +891,7 @@ let report_error_samples ~with_comment errors =
   let compare_path e1 e2 =
     List.compare Index.compare e1.path e2.path
   in
-  iter_by errors ~compare:compare_path begin fun i (e : ([`Intf | `Impl] * int option) error) es ->
+  iter_by errors ~compare:compare_path begin fun i e es ->
     if i > !opt_max_errors_report then (
       Printf.printf "- ...\n";
       raise Exit_iter
@@ -916,7 +916,7 @@ let report_error_samples ~with_comment errors =
     in
     let kind, position = sample.error in
     Printf.printf "  Sample sentence (%s):\n"
-      (match kind with `Impl -> "implementation" | `Intf -> "interface");
+      (match kind with Ocamlformat.Impl -> "implementation" | Intf -> "interface");
     Printf.printf "  ```ocaml\n";
     let printer = Sample_sentence_printer.make ~with_comment ~position in
     Derivation.iter_terminals sample.derivation

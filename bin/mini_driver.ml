@@ -37,11 +37,11 @@ let infer_kind sentence =
   let impl = "implementation: " in
   let intf = "interface: " in
   match string_chop_prefix ~prefix:impl sentence with
-  | Some sentence -> (`Impl, sentence)
+  | Some sentence -> (Ocamlformat.Impl, sentence)
   | None ->
     match string_chop_prefix ~prefix:intf sentence with
-    | Some sentence -> (`Intf, sentence)
-    | None -> (`Impl, sentence)
+    | Some sentence -> (Ocamlformat.Intf, sentence)
+    | None -> (Ocamlformat.Impl, sentence)
 
 let () =
   read_lines ic

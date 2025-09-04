@@ -215,13 +215,17 @@ let environ = lazy (Unix.environment ())
 
 let batch_ids = ref 0
 
+type source_kind =
+  | Impl
+  | Intf
+
 let start_batch ~ocamlformat_command = function
   | [] -> None
   | inputs ->
     let id = !batch_ids in
     incr batch_ids;
     let files = List.mapi (fun i (kind, source) ->
-        let ext = match kind with `Intf -> "mli" | `Impl -> "ml" in
+        let ext = match kind with Intf -> "mli" | Impl -> "ml" in
         let path = temp_path id i ext in
         let oc = open_out_bin path in
         output_string oc source;
