@@ -1149,6 +1149,40 @@ let () =
         ~batch_size:(Int.max 1 !opt_batch_size)
       |> Array.of_seq
     in
+    let valid = ref 0 in
+    let syntax_errors = ref 0 in
+    let with_comments_dropped = ref 0 in
+    let comments_dropped = ref 0 in
+    let internal_errors = ref 0 in
+    Array.iter (function
+        | [] -> incr valid;
+        | errors ->
+          let had_comments_dropped = ref false in
+          List.iter (function
+              | Ocamlformat.Error.Internal _ ->
+                incr internal_errors
+              | Syntax _ ->
+                incr syntax_errors
+              | Comment_dropped _ ->
+                incr comments_dropped;
+                if not !had_comments_dropped then (
+                  incr with_comments_dropped;
+                  had_comments_dropped := true;
+                )
+            ) errors
+      ) outcome;
+    let count = Array.length outcome in
+    let percent x = 100.0 *. float x /. float count in
+    Printf.eprintf "Tested %d sentences:\n\
+                    - %d successfully formated (%.02f%%)\n\
+                    - %d failed with syntax errors (%.02f%%)\n\
+                    - %d had comments dropped (%.02f%%) (%d comments were dropped in total)\n\
+                    - %d caused internal errors (%.02f%%)\n%!"
+      count
+      !valid            (percent !valid)
+      !syntax_errors    (percent !syntax_errors)
+      !with_comments_dropped (percent !with_comments_dropped) !comments_dropped
+      !internal_errors  (percent !internal_errors);
     report_syntax_errors derivations sources outcome;
     report_comment_dropped derivations sources outcome;
     report_internal_errors derivations sources outcome;
