@@ -675,11 +675,42 @@ let prepare_derivation_for_check ~with_comments der =
   in
   (kind, locations, Buffer.contents buf)
 
-let find_erroneous_token locations pos =
-  let tok_loc (startp', _ : int * int) = startp' >= pos in
-  match Array.find_index tok_loc locations with
-  | Some i -> i
-  | None -> Array.length locations
+let find_erroneous_token locations (startp, endp) =
+  let tok_loc (startp', _ : int * int) = startp' >= startp in
+  match Array.find_index tok_loc locations.tokens with
+  | Some i ->
+    let startp', endp' = locations.tokens.(i) in
+    if startp = startp' then
+      if endp = endp' then
+        Some i
+      else if endp = endp' - 1 then (
+        Printf.eprintf "off-by-one in token location: error at %d-%d, token at %d-%d\n"
+          startp endp startp' endp';
+        None
+      ) else (
+        Printf.eprintf "invalid token location: error at %d-%d, token at %d-%d\n"
+          startp endp startp' endp';
+        None
+      )
+    else if i < Array.length locations.comments then
+      let startp', endp' = locations.comments.(i) in
+      if startp = startp' then
+        Some i
+      else if endp = endp' - 1 then (
+        Printf.eprintf "off-by-one in comment location: error at %d-%d, token at %d-%d\n"
+          startp endp startp' endp';
+        None
+      ) else (
+        Printf.eprintf "invalid comment location: error at %d-%d, token at %d-%d\n"
+          startp endp startp' endp';
+        None
+      )
+    else (
+      Printf.eprintf "invalid error location: error at %d-%d, closest token at %d-%d\n"
+        startp endp startp' endp';
+      None
+    )
+  | None -> None
 
 module Occurence_heap : sig
   type ('n, 'a) t
@@ -930,19 +961,23 @@ let report_syntax_errors derivations sources outcome =
         Printf.eprintf "Internal error: unexpected error at %d.%d-%d (sentence: %S)\n"
           error.line error.start_col error.end_col text
       | Syntax error ->
-        let pos = find_erroneous_token locations error.start_col in
-        let expansion, reduction =
-          match derivations.(i).Derivation.desc with
-          | Expand {expansion; reduction} -> (expansion, reduction)
-          | _ -> assert false
-        in
-        let derivation = Derivation.items_of_expansion grammar ~expansion ~reduction in
-        let path, _cell, _path = Derivation.get_meta derivation pos in
-        let message = error.message in
-        let error = {derivation; error = (kind, Some pos); path} in
-        match Hashtbl.find_opt by_message message with
-        | None -> Hashtbl.add by_message message (ref [error])
-        | Some r -> push r error
+        match find_erroneous_token locations (error.start_col, error.end_col) with
+        | None ->
+          Printf.eprintf "Invalid error report: unexpected error at %d.%d-%d (sentence: %S)\n"
+            error.line error.start_col error.end_col text
+        | Some pos ->
+          let expansion, reduction =
+            match derivations.(i).Derivation.desc with
+            | Expand {expansion; reduction} -> (expansion, reduction)
+            | _ -> assert false
+          in
+          let derivation = Derivation.items_of_expansion grammar ~expansion ~reduction in
+          let path, _cell, _path = Derivation.get_meta derivation pos in
+          let message = error.message in
+          let error = {derivation; error = (kind, Some pos); path} in
+          match Hashtbl.find_opt by_message message with
+          | None -> Hashtbl.add by_message message (ref [error])
+          | Some r -> push r error
     end outcome.(i)
   done;
   (* Order by number of occurrences *)
