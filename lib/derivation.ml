@@ -126,20 +126,22 @@ let items_of_expansion g ~expansion ~reduction =
     match t.desc with
     | Null | Shift _ as desc ->
       let prefix = Item.make g prod pos :: prefix in
-      let suffix = Item.make g prod (pos + 1) :: suffix in
+      let pos = pos + 1 in
+      let suffix = Item.make g prod pos :: suffix in
       let meta = (prefix, t.meta, suffix) in
-      pos + 1, {meta; desc}
+      (pos, {meta; desc})
     | Expand e ->
       let prefix = Item.make g prod pos :: prefix in
-      let suffix = Item.make g prod (pos + 1) :: suffix in
+      let pos = pos + 1 in
+      let suffix = Item.make g prod pos :: suffix in
       let meta = (prefix, t.meta, suffix) in
       let _, expansion = aux prefix e.reduction.production 0 suffix e.expansion in
-      pos + 1, {meta; desc = Expand {e with expansion}}
+      (pos, {meta; desc = Expand {e with expansion}})
     | Node n ->
       let meta = ([], t.meta, []) in
       let pos, left = aux prefix prod pos [] n.left in
       let pos, right = aux [] prod pos suffix n.right in
-      pos, {meta; desc = Node {n with left; right}}
+      (pos, {meta; desc = Node {n with left; right}})
   in
   let {Reachability.production; _} = reduction in
   let _ , der = aux [] production 0 [] expansion in
