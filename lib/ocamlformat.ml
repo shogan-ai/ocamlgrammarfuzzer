@@ -101,8 +101,8 @@ module Output_parser = struct
 
   let error_message_2 text =
     Scanf.sscanf_opt text
-      {|ocamlformat: ignoring %S (syntax error)|}
-      (fun path -> path)
+      {|%s@: ignoring %S (syntax error)|}
+      (fun _ocamlformat path -> path)
 
   (* Error message shape 3:
 
@@ -116,23 +116,27 @@ module Output_parser = struct
 
   let error_message_3_part_1 text ic =
     Scanf.sscanf_opt text
-      {|ocamlformat: Cannot process %S.|}
-      (fun input ->
+      {|%s@: Cannot process %S.|}
+      (fun _ocamlformat input ->
          match input_line ic with
          | "  Please report this bug at https://github.com/ocaml-ppx/ocamlformat/issues." ->
            input
          | line -> failwithf "driver: %s: unexpected error header: %s" input line
       )
 
-  let error_message_3_part_2 text =
-    let bug = "  BUG: " in
-    if String.starts_with ~prefix:bug text then
-      let bugl = String.length bug in
-      let txtl = String.length text in
-      let message = String.sub text bugl (txtl - bugl) in
-      Some (Error.Internal message)
+  let error_message_3_part_2 text ic =
+    if text = "  BUG: unhandled exception." then
+      let message = input_line ic in
+      Some (Error.Internal ("Exception " ^ message))
     else
-      None
+      let bug = "  BUG: " in
+      if String.starts_with ~prefix:bug text then
+        let bugl = String.length bug in
+        let txtl = String.length text in
+        let message = String.sub text bugl (txtl - bugl) in
+        Some (Error.Internal message)
+      else
+        None
 
   let rec next_error buggy_input ic =
     match input_line ic with
@@ -149,7 +153,7 @@ module Output_parser = struct
               buggy_input := input;
               None
             | None ->
-              match error_message_3_part_2 line with
+              match error_message_3_part_2 line ic with
               | Some err -> Some (!buggy_input, err)
               | None ->
                 match error_message_2 line with
