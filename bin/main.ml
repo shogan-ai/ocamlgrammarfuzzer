@@ -847,6 +847,10 @@ end = struct
       [source]
 end
 
+type derivation_kind = Ocamlformat.source_kind =
+  | Impl
+  | Intf
+
 let derivation_kind der =
   let entrypoint = entrypoint_of_derivation der in
   match Symbol.name grammar entrypoint with
@@ -914,9 +918,9 @@ let report_error_samples ~with_comment errors =
            else e
         ) e es
     in
-    let kind, position = sample.error in
+    let skind, _ekind, position = sample.error in
     Printf.printf "  Sample sentence (%s):\n"
-      (match kind with Ocamlformat.Impl -> "implementation" | Intf -> "interface");
+      (match skind with Ocamlformat.Impl -> "implementation" | Intf -> "interface");
     Printf.printf "  ```ocaml\n";
     let printer = Sample_sentence_printer.make ~with_comment ~position in
     Derivation.iter_terminals sample.derivation
@@ -926,21 +930,21 @@ let report_error_samples ~with_comment errors =
   end;
   Printf.printf "\n"
 
-let report_syntax_errors derivations sources outcome =
-  Printf.printf "# Syntax errors\n\n";
+let report_syntax_errors derivations
+    (sources : (derivation_kind * _ * _) array) outcome =
   (* Filter and group by error message *)
   let by_message = Hashtbl.create 7 in
+  let red_herring = ref [] in
   for i = 0 to Array.length derivations - 1 do
-    let kind, locations, text = sources.(i) in
+    let skind, locations, _text = sources.(i) in
     List.iter begin function
       | Ocamlformat.Error.Internal _
       | Comment_dropped _ -> ()
       | Syntax error ->
         match Source_printer.classify_error_location locations error with
         | Source_printer.Red_herring, _ ->
-          Printf.eprintf "Invalid error report: unexpected error at %d.%d-%d (sentence: %S)\n"
-            error.line error.start_col error.end_col text
-        | _, pos ->
+          push red_herring (i, error)
+        | ekind, pos ->
           let expansion, reduction =
             match derivations.(i).Derivation.desc with
             | Expand {expansion; reduction} -> (expansion, reduction)
@@ -948,11 +952,10 @@ let report_syntax_errors derivations sources outcome =
           in
           let derivation = Derivation.items_of_expansion grammar ~expansion ~reduction in
           let path, _cell, _path = Derivation.get_meta derivation pos in
-          let message = error.message in
-          let error = {derivation; error = (kind, Some pos); path} in
-          match Hashtbl.find_opt by_message message with
-          | None -> Hashtbl.add by_message message (ref [error])
-          | Some r -> push r error
+          let err = {derivation; error = (skind, ekind, Some pos); path} in
+          match Hashtbl.find_opt by_message error.message with
+          | None -> Hashtbl.add by_message error.message (ref [err])
+          | Some r -> push r err
     end outcome.(i)
   done;
   (* Order by number of occurrences *)
@@ -961,22 +964,68 @@ let report_syntax_errors derivations sources outcome =
                     (Hashtbl.to_seq by_message))
   in
   Array.sort (fun (_,r1,_) (_,r2,_) -> Int.compare r2 r1) by_message;
-  (* Classify by item *)
+  (* Classify by item and error kind *)
   let heap = Occurrence_heap.make (Item.cardinal grammar) in
-  Array.iter (fun (message, _, errors) ->
-      Printf.printf "## %s\n" message;
-      (* Errors by most frequent items *)
-      List.iter
-        (fun e -> Occurrence_heap.add heap (IndexSet.of_list e.path) e)
-        errors;
-      Seq.iter (fun (item, errors) ->
+  let all_syntax_errors = ref [] in
+  let all_comment_errors = ref [] in
+  let all_lexer_errors = ref [] in
+  let all_invariant_errors = ref [] in
+  let push_non_empty l r v =
+    if not (List.is_empty l) then
+      push r v
+  in
+  Array.iter begin fun (message, _, errors) ->
+    (* Errors by most frequent items *)
+    List.iter
+      (fun e -> Occurrence_heap.add heap (IndexSet.of_list e.path) e)
+      errors;
+    let syntax_errors = ref [] in
+    let comment_errors = ref [] in
+    let lexer_errors = ref [] in
+    let invariant_errors = ref [] in
+    Seq.iter begin fun (item, errors) ->
+      let kind (k : Source_printer.error_kind) e =
+        let _, k', _ = e.error in
+        k' = k
+      in
+      let lex', errors = List.partition (kind Lexer) errors in
+      push_non_empty lex' lexer_errors (item, lex');
+      let com', errors = List.partition (kind Comment) errors in
+      push_non_empty com' comment_errors (item, com');
+      push_non_empty errors
+        (if List.exists (kind Syntactic_invariant) errors
+         then invariant_errors
+         else syntax_errors)
+        (item, errors);
+    end (Occurrence_heap.pop_seq heap);
+    let push_result r v = push_non_empty !v r (message, List.rev !v) in
+    push_result all_syntax_errors syntax_errors;
+    push_result all_comment_errors comment_errors;
+    push_result all_lexer_errors lexer_errors;
+    push_result all_invariant_errors invariant_errors;
+  end by_message;
+  (* Report each major kind *)
+  let report_kind ~with_comment title r =
+    match List.rev !r with
+    | [] -> ()
+    | group ->
+      Printf.printf "# %s\n\n" title;
+      List.iter begin fun (message, errors) ->
+        Printf.printf "## %s\n" message;
+        List.iter begin fun (item, errors) ->
           Printf.printf "\n### Item `%s` (in %d error%s)\n\n"
             (Item.to_string grammar item)
             (List.length errors) (plural errors);
-          report_error_samples ~with_comment:false errors;
-        ) (Occurrence_heap.pop_seq heap)
-    ) by_message;
-  Printf.printf "\n"
+          report_error_samples ~with_comment errors;
+        end errors
+      end group;
+      Printf.printf "\n"
+  in
+  report_kind ~with_comment:false "Parser errors"    all_syntax_errors;
+  report_kind ~with_comment:false "Lexer errors"     all_lexer_errors;
+  report_kind ~with_comment:true  "Comment errors"   all_comment_errors;
+  report_kind ~with_comment:false "Invariant errors" all_invariant_errors;
+  (List.rev !red_herring)
 
 let report_comment_dropped derivations sources outcome =
   Printf.printf "# Comment dropped\n\n";
@@ -995,7 +1044,7 @@ let report_comment_dropped derivations sources outcome =
         let derivation = Derivation.items_of_expansion grammar ~expansion ~reduction in
         let path, _cell, _path = Derivation.get_meta derivation pos in
         Occurrence_heap.add heap (IndexSet.of_list path)
-          {derivation; error = (kind, Some pos); path}
+          {derivation; error = (kind, Source_printer.Comment, Some pos); path}
     end outcome.(i)
   done;
   (* Print errors by most frequent item *)
@@ -1007,7 +1056,7 @@ let report_comment_dropped derivations sources outcome =
     ) (Occurrence_heap.pop_seq heap);
   Printf.printf "\n"
 
-let report_internal_errors derivations sources outcome =
+let report_internal_errors derivations sources outcome _red_herrings =
   Printf.printf "# Internal errors\n\n";
   Printf.printf "Note: when OCamlformat fails with an internal error, \
                  it is not possible to know the location of the problem.\n";
@@ -1093,7 +1142,7 @@ let report_internal_errors derivations sources outcome =
       with Exit -> ()
     end;
     let kind, _ = error.error in
-    {error with error = (kind, Some !pos); path = !path}
+    {error with error = (kind, Source_printer.Red_herring, Some !pos); path = !path}
   in
   (* Order by number of occurrences *)
   let by_message =
@@ -1174,23 +1223,23 @@ let () =
     let with_comments_dropped = ref 0 in
     let comments_dropped = ref 0 in
     let internal_errors = ref 0 in
-    Array.iter (function
-        | [] -> incr valid;
-        | errors ->
-          let had_comments_dropped = ref false in
-          List.iter (function
-              | Ocamlformat.Error.Internal _ ->
-                incr internal_errors
-              | Syntax _ ->
-                incr syntax_errors
-              | Comment_dropped _ ->
-                incr comments_dropped;
-                if not !had_comments_dropped then (
-                  incr with_comments_dropped;
-                  had_comments_dropped := true;
-                )
-            ) errors
-      ) outcome;
+    Array.iter begin function
+      | [] -> incr valid;
+      | errors ->
+        let had_comments_dropped = ref false in
+        List.iter begin function
+          | Ocamlformat.Error.Internal _ ->
+            incr internal_errors
+          | Syntax _ ->
+            incr syntax_errors
+          | Comment_dropped _ ->
+            incr comments_dropped;
+            if not !had_comments_dropped then (
+              incr with_comments_dropped;
+              had_comments_dropped := true;
+            )
+        end errors
+    end outcome;
     let count = Array.length outcome in
     let percent x = 100.0 *. float x /. float count in
     Printf.eprintf "Tested %d sentences:\n\
@@ -1203,7 +1252,7 @@ let () =
       !syntax_errors    (percent !syntax_errors)
       !with_comments_dropped (percent !with_comments_dropped) !comments_dropped
       !internal_errors  (percent !internal_errors);
-    report_syntax_errors derivations sources outcome;
+    let red_herrings = report_syntax_errors derivations sources outcome in
     report_comment_dropped derivations sources outcome;
-    report_internal_errors derivations sources outcome;
+    report_internal_errors derivations sources outcome red_herrings;
   )
