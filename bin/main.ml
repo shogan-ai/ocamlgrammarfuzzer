@@ -17,6 +17,7 @@ let opt_focus = ref []
 let opt_exhaust = ref false
 let opt_ocamlformat_check = ref false
 let opt_ocamlformat = ref "ocamlformat"
+let opt_max_errors_report = ref 20
 let opt_jobs = ref 8
 let opt_batch_size = ref 80
 
@@ -38,6 +39,7 @@ let spec_list = [
   ("--exhaust", Arg.Set opt_exhaust, " Exhaust mode generates a deterministic set of sentences that cover all reachable constructions");
   ("--ocamlformat", Arg.Set_string opt_ocamlformat, " Path to OCamlformat command to use");
   ("--ocamlformat-check", Arg.Set opt_ocamlformat_check, " Check generated sentences with ocamlformat (default is to print them)");
+  ("--max-report", Arg.Set_int opt_max_errors_report, " Maximum number of derivations to report per error (default: 20)");
   ("--jobs", Arg.Set_int opt_jobs, " Number of ocamlformat processes to run in parallel (default: 8)");
   ("--batch-size", Arg.Set_int opt_batch_size, " Number of files to submit to each ocamlformat process (default: 80)");
 ]
@@ -847,16 +849,23 @@ let plural = function
   | _ -> "s"
 
 let report_error_samples ~with_comment errors =
+  let exception Exit_iter in
   let iter_by ~compare xs f =
-    xs
-    |> group_by ~compare ~group:(fun x xs -> (1 + List.length xs, x, xs))
-    |> List.sort (fun (r1, _, _) (r2, _, _) -> Int.compare r2 r1)
-    |> List.iter (fun (_, x, xs) -> f x xs)
+    try
+      xs
+      |> group_by ~compare ~group:(fun x xs -> (1 + List.length xs, x, xs))
+      |> List.sort (fun (r1, _, _) (r2, _, _) -> Int.compare r2 r1)
+      |> List.iteri (fun i (_, x, xs) -> f i x xs)
+    with Exit_iter -> ()
   in
   let compare_path e1 e2 =
     List.compare Index.compare e1.path e2.path
   in
-  iter_by errors ~compare:compare_path begin fun (e : ([`Intf | `Impl] * int option) error) es ->
+  iter_by errors ~compare:compare_path begin fun i (e : ([`Intf | `Impl] * int option) error) es ->
+    if i > !opt_max_errors_report then (
+      Printf.printf "- ...\n";
+      raise Exit_iter
+    );
     Printf.printf "- Derivation (%d occurrence%s):\n"
       (1 + List.length es)
       (plural (e :: es));
@@ -951,7 +960,7 @@ let report_syntax_errors derivations sources outcome =
         (fun e -> Occurence_heap.add heap (IndexSet.of_list e.path) e)
         errors;
       Seq.iter (fun (item, errors) ->
-          Printf.printf "\n### Item `%s` (in %d error%s)\n"
+          Printf.printf "\n### Item `%s` (in %d error%s)\n\n"
             (Item.to_string grammar item)
             (List.length errors) (plural errors);
           report_error_samples ~with_comment:false errors;
@@ -1091,7 +1100,7 @@ let report_internal_errors derivations sources outcome =
         (fun e -> Occurence_heap.add heap (snd e.error) e)
         errors;
       Seq.iter (fun (item, errors) ->
-          Printf.printf "\n### Item `%s` (in %d error%s)\n"
+          Printf.printf "\n### Item `%s` (in %d error%s)\n\n"
             (Item.to_string grammar item)
             (List.length errors) (plural errors);
           report_error_samples ~with_comment:false
