@@ -1052,14 +1052,15 @@ let report_non_located_errors derivations outcome kind ~header =
   (* Filter and group by error message *)
   let by_message = Hashtbl.create 7 in
   let highly_safe_cells = Boolvector.make Reach.Cell.n false in
-  let potentially_safe_cells = Boolvector.make Reach.Cell.n false in
+  let is_unsafe_cell cell = not (Boolvector.test highly_safe_cells cell) in
+  (*let potentially_safe_cells = Boolvector.make Reach.Cell.n false in
   let is_potentially_unsafe cell =
     not (Boolvector.test potentially_safe_cells cell)
-  in
-  let is_highly_unsafe cell =
+    in*)
+  (*let is_highly_unsafe cell =
     not (Boolvector.test highly_safe_cells cell) &&
     is_potentially_unsafe cell
-  in
+    in*)
   let mark_safe table der =
     let rec loop der =
       Boolvector.set table (Derivation.meta der);
@@ -1082,12 +1083,12 @@ let report_non_located_errors derivations outcome kind ~header =
 
         let errors = List.filter (fun (k, _, _) -> k = kind) errors in
 
-        if List.is_empty errors then (
+        (*if List.is_empty errors then (
           (* There were errors, but none of the kind we were looking for.
              Mark all cells in this derivation as potentially safe *)
           mark_safe potentially_safe_cells derivations.(i);
           None
-        ) else
+          ) else*)
           Some (i, source_kind, errors)
     end
     |> Array.of_seq
@@ -1114,10 +1115,10 @@ let report_non_located_errors derivations outcome kind ~header =
       in
       let derivation = Derivation.items_of_expansion grammar ~expansion ~reduction in
       (* Try to find the worst offenders *)
-      collect_cells is_highly_unsafe derivation;
-      if IndexSet.is_empty !unsafe_items then
+      collect_cells is_unsafe_cell derivation;
+      (*if IndexSet.is_empty !unsafe_items then
         (* Nothing found. Try to find potential offenders *)
-        collect_cells is_potentially_unsafe derivation;
+        collect_cells is_potentially_unsafe derivation;*)
       if IndexSet.is_empty !unsafe_items then
         (* Still nothing. Try anything *)
         collect_cells (fun _ -> true) derivation;
@@ -1157,8 +1158,8 @@ let report_non_located_errors derivations outcome kind ~header =
     in
     begin
       try
-        find_pos is_highly_unsafe error.derivation;
-        find_pos is_potentially_unsafe error.derivation;
+        find_pos is_unsafe_cell error.derivation;
+        (*find_pos is_potentially_unsafe error.derivation;*)
         find_pos (fun _ -> true) error.derivation;
       with Exit -> ()
     end;
