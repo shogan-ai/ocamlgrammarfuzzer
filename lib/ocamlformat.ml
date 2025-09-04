@@ -2,31 +2,26 @@ open Utils.Misc
 
 let debug = false
 
-module Error = struct
-  type syntax = {
+type location = {
     line : int;
     start_col: int;
     end_col: int;
-    message : string;
-  }
+}
 
-  type internal = string
+type error = {
+  message: string;
+  location: location option;
+}
 
-  type t =
-    | Syntax of syntax
-    | Internal of internal
-    | Comment_dropped of int
+let error ?location message = { message; location}
 
-  let to_string = function
-    | Syntax {line; start_col; end_col; message} ->
-      Printf.sprintf "syntax error: line %d.%d-%d: %s"
-        line start_col end_col message
-    | Internal message ->
-      Printf.sprintf "internal error: %s" message
-    | Comment_dropped index ->
-      Printf.sprintf "comment error: comment %d dropped"
-        index
-end
+let error_to_string {message; location} =
+  match location with
+  | None ->
+    Printf.sprintf "error: %s" message
+  | Some {line; start_col; end_col} ->
+    Printf.sprintf "error: line %d.%d-%d: %s"
+      line start_col end_col message
 
 let input_line ic =
   let result = input_line ic in
@@ -58,6 +53,9 @@ module Output_parser = struct
      following lines do not match the template.
   *)
 
+  (* Replace error messages mentioning a specific comment with a generic text *)
+  let comment_dropped = "Error: comment dropped."
+
   let error_message_1 text ic =
     Scanf.sscanf_opt text
       {|File %S, line %d, characters %d-%d:|}
@@ -66,11 +64,12 @@ module Output_parser = struct
            match Scanf.sscanf_opt text "%d | %s" (fun _ _ -> ()) with
            | Some _ -> None
            | None ->
-             match Scanf.sscanf_opt text "Error: comment (*  C%d  *) dropped." (fun d -> d) with
-             | Some d -> Some (Some (input, Error.Comment_dropped d))
+             let location = {line; start_col; end_col} in
+             match Scanf.sscanf_opt text "Error: comment (*  C%d  *) dropped." (fun _ -> ()) with
+             | Some () -> Some (Some (input, error ~location comment_dropped))
              | None ->
                if String.starts_with ~prefix:"Error: " text then
-                 Some (Some (input, Error.Syntax {line; start_col; end_col; message=text}))
+                 Some (Some (input, error ~location text))
                else if String.starts_with ~prefix:"  This "  text then
                  Some None
                else
@@ -126,17 +125,11 @@ module Output_parser = struct
 
   let error_message_3_part_2 text ic =
     if text = "  BUG: unhandled exception." then
-      let message = input_line ic in
-      Some (Error.Internal ("Exception " ^ message))
+      Some (error ("Exception: " ^ input_line ic))
+    else if String.starts_with ~prefix:"  BUG: " text then
+      Some (error (String.trim text))
     else
-      let bug = "  BUG: " in
-      if String.starts_with ~prefix:bug text then
-        let bugl = String.length bug in
-        let txtl = String.length text in
-        let message = String.sub text bugl (txtl - bugl) in
-        Some (Error.Internal message)
-      else
-        None
+      None
 
   let rec next_error buggy_input ic =
     match input_line ic with
@@ -180,18 +173,18 @@ module Output_parser = struct
 
   let rev_cleanup_errors answers =
     let rec loop acc = function
-      | (input, Error.Internal "comment changed.") :: rest -> (
-          match rest with
-          | (input', Error.Comment_dropped _) :: _ when input = input' ->
+      | (input, {message = "BUG: comment changed."; location = None}) :: rest ->
+        begin match rest with
+          | (input', error) :: _ when input = input' && error.message = comment_dropped ->
             loop acc rest
           | _ ->
             let msg = match rest with
               | [] -> "end of file"
-              | (file, err) :: _ -> file ^ ": " ^ Error.to_string err
+              | (file, err) :: _ -> file ^ ": " ^ error_to_string err
             in
             failwithf "driver: error: expecting error details after \
                        \"comment changed.\", got %s" msg
-        )
+        end
       | x :: xs -> loop (x :: acc) xs
       | [] -> acc
     in

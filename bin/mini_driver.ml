@@ -50,7 +50,7 @@ let () =
   |> Seq.iteri begin fun i errors ->
     List.iter begin fun error ->
       Printf.printf "line %06d: %s\n"
-        i (Ocamlformat.Error.to_string error)
+        i (Ocamlformat.error_to_string error)
     end errors
   end
 

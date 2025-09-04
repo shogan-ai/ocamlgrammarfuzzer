@@ -655,6 +655,14 @@ let entrypoint_of_derivation der =
    To avoid this case, we pad the inputs with many spaces to make it very
    unlikely for any formatted output to have overlapping locations.
 *)
+type error_kind =
+  | Syntax
+  | Comment
+  | Lexer
+  | Syntactic_invariant
+  | Red_herring
+  | Internal_error
+
 module Source_printer : sig
   type t
   val make : with_comments:bool -> unit -> t
@@ -665,14 +673,7 @@ module Source_printer : sig
 
   val flush : t -> locations * source
 
-  type error_kind =
-    | Syntax
-    | Comment
-    | Lexer
-    | Syntactic_invariant
-    | Red_herring
-
-  val classify_error_location : locations -> Ocamlformat.Error.syntax -> error_kind * int
+  val classify_error_location : locations -> Ocamlformat.location -> error_kind * int
 end = struct
   let padding = String.make 90 ' '
 
@@ -742,22 +743,15 @@ end = struct
     t.comment_locations <- [];
     ({tokens; comments}, source)
 
-  type error_kind =
-    | Syntax
-    | Comment
-    | Lexer
-    | Syntactic_invariant
-    | Red_herring
-
-  let classify_error_location l {Ocamlformat.Error. line; start_col; end_col; _} =
+  let classify_error_location l {Ocamlformat. line; start_col; end_col; _} =
     if line <> 1 then
       (Red_herring, Array.length l.tokens)
     else
       let find_start (startp, endp) = startp <= start_col && start_col < endp in
       let find_end (_, endp) = end_col = endp in
-      let find_exact (startp, endp) = start_col = startp && end_col = endp in
       match Array.find_index find_start l.tokens with
       | None ->
+        let find_exact (startp, endp) = start_col = startp && endp = end_col in
         begin match Array.find_index find_exact l.comments with
           | Some i ->
             (* Exact comment match: comment (likely dropped) error *)
@@ -870,12 +864,14 @@ let prepare_derivation_for_check printer der =
   let locations, source = Source_printer.flush printer in
   (derivation_kind der, locations, source)
 
-type 'a error = {
+type error = {
   path: g item index list;
+  source_kind: Ocamlformat.source_kind;
   derivation: (g, Reach.r, g item index list *
                            Reach.Cell.n index *
                            g item index list) Derivation.t;
-  error: 'a;
+  kind: error_kind;
+  position: int option;
 }
 
 let plural = function
@@ -918,10 +914,12 @@ let report_error_samples ~with_comment errors =
            else e
         ) e es
     in
-    let skind, _ekind, position = sample.error in
     Printf.printf "  Sample sentence (%s):\n"
-      (match skind with Ocamlformat.Impl -> "implementation" | Intf -> "interface");
+      (match sample.source_kind with
+       | Ocamlformat.Impl -> "implementation"
+       | Intf -> "interface");
     Printf.printf "  ```ocaml\n";
+    let position = sample.position in
     let printer = Sample_sentence_printer.make ~with_comment ~position in
     Derivation.iter_terminals sample.derivation
       ~f:(fun t -> Sample_sentence_printer.add_terminal printer terminal_text.:(t));
@@ -930,34 +928,27 @@ let report_error_samples ~with_comment errors =
   end;
   Printf.printf "\n"
 
-let report_syntax_errors derivations
-    (sources : (derivation_kind * _ * _) array) outcome =
-  (* Filter and group by error message *)
+let report_located_errors derivations outcome =
+  (* Filter and group common errors by message *)
   let by_message = Hashtbl.create 7 in
-  let red_herring = ref [] in
-  for i = 0 to Array.length derivations - 1 do
-    let skind, locations, _text = sources.(i) in
-    List.iter begin function
-      | Ocamlformat.Error.Internal _
-      | Comment_dropped _ -> ()
-      | Syntax error ->
-        match Source_printer.classify_error_location locations error with
-        | Source_printer.Red_herring, _ ->
-          push red_herring (i, error)
-        | ekind, pos ->
-          let expansion, reduction =
-            match derivations.(i).Derivation.desc with
-            | Expand {expansion; reduction} -> (expansion, reduction)
-            | _ -> assert false
-          in
-          let derivation = Derivation.items_of_expansion grammar ~expansion ~reduction in
-          let path, _cell, _path = Derivation.get_meta derivation pos in
-          let err = {derivation; error = (skind, ekind, Some pos); path} in
-          match Hashtbl.find_opt by_message error.message with
-          | None -> Hashtbl.add by_message error.message (ref [err])
-          | Some r -> push r err
-    end outcome.(i)
-  done;
+  Array.iteri begin fun i (source_kind, errors) ->
+    List.iter begin fun (kind, pos, error) ->
+      match kind with
+      | Internal_error | Red_herring -> ()
+      | _ ->
+        let expansion, reduction =
+          match derivations.(i).Derivation.desc with
+          | Expand {expansion; reduction} -> (expansion, reduction)
+          | _ -> assert false
+        in
+        let derivation = Derivation.items_of_expansion grammar ~expansion ~reduction in
+        let path, _cell, _path = Derivation.get_meta derivation pos in
+        let err = {source_kind; derivation; kind; path; position = Some pos} in
+        match Hashtbl.find_opt by_message error.Ocamlformat.message with
+        | None -> Hashtbl.add by_message error.message (ref [err])
+        | Some r -> push r err
+    end errors
+  end outcome;
   (* Order by number of occurrences *)
   let by_message =
     Array.of_seq (Seq.map (fun (k, v) -> (k, List.length !v, !v))
@@ -984,10 +975,7 @@ let report_syntax_errors derivations
     let lexer_errors = ref [] in
     let invariant_errors = ref [] in
     Seq.iter begin fun (item, errors) ->
-      let kind (k : Source_printer.error_kind) e =
-        let _, k', _ = e.error in
-        k' = k
-      in
+      let kind (k : error_kind) e = e.kind = k in
       let lex', errors = List.partition (kind Lexer) errors in
       push_non_empty lex' lexer_errors (item, lex');
       let com', errors = List.partition (kind Comment) errors in
@@ -1005,11 +993,13 @@ let report_syntax_errors derivations
     push_result all_invariant_errors invariant_errors;
   end by_message;
   (* Report each major kind *)
-  let report_kind ~with_comment title r =
+  let report_kind ~with_comment title r ~header =
     match List.rev !r with
     | [] -> ()
     | group ->
       Printf.printf "# %s\n\n" title;
+      header ();
+      Printf.printf "\n\n";
       List.iter begin fun (message, errors) ->
         Printf.printf "## %s\n" message;
         List.iter begin fun (item, errors) ->
@@ -1021,109 +1011,139 @@ let report_syntax_errors derivations
       end group;
       Printf.printf "\n"
   in
-  report_kind ~with_comment:false "Parser errors"    all_syntax_errors;
-  report_kind ~with_comment:false "Lexer errors"     all_lexer_errors;
-  report_kind ~with_comment:true  "Comment errors"   all_comment_errors;
-  report_kind ~with_comment:false "Invariant errors" all_invariant_errors;
-  (List.rev !red_herring)
+  report_kind ~with_comment:false "Parser errors"    all_syntax_errors
+    ~header:begin fun () ->
+      Printf.printf
+        "A parser error is reported when OCamlformat rejects an input \
+         on a specific token.\n\
+         The error location is the token that caused the failure; \n\
+         it is usually the exact point where the parser could not continue."
+    end;
+  report_kind ~with_comment:false "Lexer errors"     all_lexer_errors
+    ~header:begin fun () ->
+      Printf.printf
+        "A lexer error is reported when OCamlformat rejected an input on a \
+         location that does not form a complete token for the fuzzer.\n\
+         This usually indicates a mismatch between the lexical specification \
+         used by the fuzzer and the lexer implementation in OCamlformat.\n\
+         The token at that spot is likely not properly recognized."
+    end;
+  report_kind ~with_comment:true  "Comment errors"   all_comment_errors
+    ~header:begin fun () ->
+      Printf.printf
+        "These are errors OCamlformat reports while processing a comment.\n\
+         They usually mean that the comment was not preserved by the formatting \
+         process (e.g., it was dropped or moved)."
+    end;
+  report_kind ~with_comment:false "Invariant errors" all_invariant_errors
+    ~header:begin fun () ->
+      Printf.printf
+        "Invariant errors are grammatical violations that span more than one \
+         token and are detected by semantic actions after parsing.\n\
+         They are not produced by Menhir itself but by checks that enforce \
+         specific language invariants.\n\
+         The reported location is typically the first token of the offending \
+         construct.\n\
+         Because the fuzzer does not understand these finer invariants, \
+         such errors may appear as false positives."
+    end
 
-let report_comment_dropped derivations sources outcome =
-  Printf.printf "# Comment dropped\n\n";
-  (* Classify by item *)
-  let heap = Occurrence_heap.make (Item.cardinal grammar) in
-  for i = 0 to Array.length derivations - 1 do
-    let kind, _locations, _text = sources.(i) in
-    List.iter begin function
-      | Ocamlformat.Error.Internal _ | Syntax _ -> ()
-      | Comment_dropped pos ->
-        let expansion, reduction =
-          match derivations.(i).Derivation.desc with
-          | Expand {expansion; reduction} -> (expansion, reduction)
-          | _ -> assert false
-        in
-        let derivation = Derivation.items_of_expansion grammar ~expansion ~reduction in
-        let path, _cell, _path = Derivation.get_meta derivation pos in
-        Occurrence_heap.add heap (IndexSet.of_list path)
-          {derivation; error = (kind, Source_printer.Comment, Some pos); path}
-    end outcome.(i)
-  done;
-  (* Print errors by most frequent item *)
-  Seq.iter (fun (item, errors) ->
-      Printf.printf "## Item `%s` (in %d error%s)\n"
-        (Item.to_string grammar item)
-        (List.length errors) (plural errors);
-      report_error_samples ~with_comment:true errors;
-    ) (Occurrence_heap.pop_seq heap);
-  Printf.printf "\n"
-
-let report_internal_errors derivations sources outcome _red_herrings =
-  Printf.printf "# Internal errors\n\n";
-  Printf.printf "Note: when OCamlformat fails with an internal error, \
-                 it is not possible to know the location of the problem.\n";
-  Printf.printf
-    "Locations for these errors are guessed by looking at the syntactic \
-     constructions that appear most often in the failing sentences.\n\n";
-
+let report_non_located_errors derivations outcome kind ~header =
   (* Filter and group by error message *)
   let by_message = Hashtbl.create 7 in
-  let safe_cells = Boolvector.make Reach.Cell.n false in
-  for i = 0 to Array.length derivations - 1 do
-    match outcome.(i) with
-    | [] ->
+  let highly_safe_cells = Boolvector.make Reach.Cell.n false in
+  let potentially_safe_cells = Boolvector.make Reach.Cell.n false in
+  let is_potentially_unsafe cell =
+    not (Boolvector.test potentially_safe_cells cell)
+  in
+  let is_highly_unsafe cell =
+    not (Boolvector.test highly_safe_cells cell) &&
+    is_potentially_unsafe cell
+  in
+  let mark_safe table der =
+    let rec loop der =
+      Boolvector.set table (Derivation.meta der);
+      Derivation.iter_sub loop der
+    in
+    loop der
+  in
+  let outcome' =
+    outcome
+    |> Array.to_seqi
+    |> Seq.filter_map begin fun (i, (source_kind, errors)) ->
+      match errors with
+      | [] ->
 
-      (* No error, mark all cells in this derivation as safe *)
-      let rec mark_safe der =
-        Boolvector.set safe_cells (Derivation.meta der);
-        Derivation.iter_sub mark_safe der
+        (* No error, mark all cells in this derivation as highly safe *)
+        mark_safe highly_safe_cells derivations.(i);
+        None
+
+      | errors ->
+
+        let errors = List.filter (fun (k, _, _) -> k = kind) errors in
+
+        if List.is_empty errors then (
+          (* There were errors, but none of the kind we were looking for.
+             Mark all cells in this derivation as potentially safe *)
+          mark_safe potentially_safe_cells derivations.(i);
+          None
+        ) else
+          Some (i, source_kind, errors)
+    end
+    |> Array.of_seq
+  in
+  (* Now that we know the remaining errors and the safe cells,
+     classify the potential locations of the errors *)
+  Array.iter begin fun (i, source_kind, errors) ->
+    List.iter begin fun (_, _, {Ocamlformat. message; _}) ->
+      let expansion, reduction =
+        match derivations.(i).Derivation.desc with
+        | Expand {expansion; reduction} -> (expansion, reduction)
+        | _ -> assert false
       in
-      mark_safe derivations.(i)
-
-    | errors ->
-      let kind, _locations, _text = sources.(i) in
-      List.iter begin function
-        | Ocamlformat.Error.Syntax _
-        | Comment_dropped _ -> ()
-        | Internal message ->
-          let expansion, reduction =
-            match derivations.(i).Derivation.desc with
-            | Expand {expansion; reduction} -> (expansion, reduction)
-            | _ -> assert false
-          in
-          let derivation = Derivation.items_of_expansion grammar ~expansion ~reduction in
-          let unsafe_items = ref IndexSet.empty in
-          let add_item item = unsafe_items := IndexSet.add item !unsafe_items in
-          let rec collect_unsafe der =
-            let path, cell, _path = Derivation.meta der in
-            if not (Boolvector.test safe_cells cell) then
-              List.iter add_item path;
-            Derivation.iter_sub collect_unsafe der
-          in
-          collect_unsafe derivation;
-          let rec collect_any der =
-            let path, _cell, _path = Derivation.meta der in
+      let unsafe_items = ref IndexSet.empty in
+      let add_item item = unsafe_items := IndexSet.add item !unsafe_items in
+      let collect_cells pred der =
+        let rec loop der =
+          let path, cell, _path = Derivation.meta der in
+          if pred cell then
             List.iter add_item path;
-            Derivation.iter_sub collect_any der
-          in
-          if IndexSet.is_empty !unsafe_items then
-            collect_any derivation;
-          assert (not (IndexSet.is_empty !unsafe_items));
-          let error = {derivation; error = (kind, !unsafe_items); path = []} in
-          match Hashtbl.find_opt by_message message with
-          | None -> Hashtbl.add by_message message (ref [error])
-          | Some r -> push r error
-      end errors
-  done;
+          Derivation.iter_sub loop der
+        in
+        loop der
+      in
+      let derivation = Derivation.items_of_expansion grammar ~expansion ~reduction in
+      (* Try to find the worst offenders *)
+      collect_cells is_highly_unsafe derivation;
+      if IndexSet.is_empty !unsafe_items then
+        (* Nothing found. Try to find potential offenders *)
+        collect_cells is_potentially_unsafe derivation;
+      if IndexSet.is_empty !unsafe_items then
+        (* Still nothing. Try anything *)
+        collect_cells (fun _ -> true) derivation;
+      assert (not (IndexSet.is_empty !unsafe_items));
+      let error = (!unsafe_items, {source_kind; derivation; kind; path = []; position = None}) in
+      match Hashtbl.find_opt by_message message with
+      | None -> Hashtbl.add by_message message (ref [error])
+      | Some r -> push r error
+    end errors
+  end outcome';
+  (* Order by number of occurrences *)
+  let by_message =
+    Array.of_seq (Seq.map (fun (k, v) -> (k, List.length !v, !v))
+                    (Hashtbl.to_seq by_message))
+  in
+  Array.sort (fun (_,r1,_) (_,r2,_) -> Int.compare r2 r1) by_message;
+  (* Classify by item *)
   let annotate_with_item item error =
     let path = ref [] in
     let pos = ref 0 in
-    let find_pos any der =
+    let find_pos pred der =
       let rec loop der =
         let pos' = !pos in
         Derivation.iter_sub loop der;
         let path', cell, _ = Derivation.meta der in
-        if (any || not (Boolvector.test safe_cells cell)) &&
-           List.mem item path'
-        then (
+        if pred cell && List.mem item path' then (
           pos := pos';
           path := path';
           raise Exit
@@ -1137,35 +1157,29 @@ let report_internal_errors derivations sources outcome _red_herrings =
     in
     begin
       try
-        find_pos false error.derivation;
-        find_pos true error.derivation
+        find_pos is_highly_unsafe error.derivation;
+        find_pos is_potentially_unsafe error.derivation;
+        find_pos (fun _ -> true) error.derivation;
       with Exit -> ()
     end;
-    let kind, _ = error.error in
-    {error with error = (kind, Source_printer.Red_herring, Some !pos); path = !path}
+    {error with path = !path}
   in
-  (* Order by number of occurrences *)
-  let by_message =
-    Array.of_seq (Seq.map (fun (k, v) -> (k, List.length !v, !v))
-                    (Hashtbl.to_seq by_message))
-  in
-  Array.sort (fun (_,r1,_) (_,r2,_) -> Int.compare r2 r1) by_message;
-  (* Classify by item *)
   let heap = Occurrence_heap.make (Item.cardinal grammar) in
-  Array.iter (fun (message, _, errors) ->
-      Printf.printf "## %s (%d error%s)\n" message (List.length errors) (plural errors);
-      (* Errors by most frequent items *)
-      List.iter
-        (fun e -> Occurrence_heap.add heap (snd e.error) e)
-        errors;
-      Seq.iter (fun (item, errors) ->
-          Printf.printf "\n### Item `%s` (in %d error%s)\n\n"
-            (Item.to_string grammar item)
-            (List.length errors) (plural errors);
-          report_error_samples ~with_comment:false
-            (List.map (annotate_with_item item) errors);
-        ) (Occurrence_heap.pop_seq heap)
-    ) by_message;
+  Array.iteri begin fun i (message, _, errors) ->
+    if i = 0 then header ();
+    Printf.printf "## %s (%d error%s)\n" message (List.length errors) (plural errors);
+    (* Errors by most frequent items *)
+    List.iter
+      (fun (items, error) -> Occurrence_heap.add heap items error)
+      errors;
+    Seq.iter (fun (item, errors) ->
+        Printf.printf "\n### Item `%s` (in %d error%s)\n\n"
+          (Item.to_string grammar item)
+          (List.length errors) (plural errors);
+        report_error_samples ~with_comment:false
+          (List.map (annotate_with_item item) errors);
+      ) (Occurrence_heap.pop_seq heap)
+  end by_message;
   Printf.printf "\n"
 
 let () =
@@ -1216,9 +1230,46 @@ let () =
         ~ocamlformat_command:!opt_ocamlformat
         ~jobs:(Int.max 0 !opt_jobs)
         ~batch_size:(Int.max 1 !opt_batch_size)
+      |> Seq.mapi begin fun i errors ->
+        let source_kind, locations, _ = sources.(i) in
+        let errors =
+          List.map begin fun error ->
+            let kind, position = match error.Ocamlformat.location with
+              | None -> (Internal_error, -1)
+              | Some loc ->
+                Source_printer.classify_error_location locations loc
+            in
+            (kind, position, error)
+          end errors
+        in
+        (source_kind, errors)
+      end
       |> Array.of_seq
     in
-    let valid = ref 0 in
+    report_located_errors derivations outcome;
+    report_non_located_errors derivations outcome Internal_error
+      ~header:begin fun () ->
+        Printf.printf "# Internal errors\n\n";
+        Printf.printf
+          "When OCamlformat fails with an internal error, the exact location of
+           the problem cannot be determined.\n\
+           The location is guessed by examining the syntactic constructions \
+           that appear most frequently in the failing code.\n\n"
+      end;
+    report_non_located_errors derivations outcome Red_herring
+      ~header:begin fun () ->
+        Printf.printf "# Red herrings\n\n";
+        Printf.printf
+          "Red herrings are errors for which OCamlformat reports an invalid location.\n\
+           This can happen, for example, if the formatter succeeds on the first pass but \
+           fails on a subsequent one, causing the error to refer to a location in an \
+           intermediate file that is not visible to end users.\n\
+           Note that, as with internal errors, the exact location of the problem \
+           cannot be determined.\n\
+           The location is guessed by inspecting the syntactic constructions that appear \
+           most frequently in the failing code.\n\n"
+      end;
+    (*let valid = ref 0 in
     let syntax_errors = ref 0 in
     let with_comments_dropped = ref 0 in
     let comments_dropped = ref 0 in
@@ -1251,8 +1302,5 @@ let () =
       !valid            (percent !valid)
       !syntax_errors    (percent !syntax_errors)
       !with_comments_dropped (percent !with_comments_dropped) !comments_dropped
-      !internal_errors  (percent !internal_errors);
-    let red_herrings = report_syntax_errors derivations sources outcome in
-    report_comment_dropped derivations sources outcome;
-    report_internal_errors derivations sources outcome red_herrings;
+      !internal_errors  (percent !internal_errors); *)
   )

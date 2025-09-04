@@ -1,20 +1,15 @@
-module Error : sig
-  type syntax = {
+type location = {
     line : int;
     start_col: int;
     end_col: int;
-    message : string;
-  }
+}
 
-  type internal = string
+type error = {
+  message: string;
+  location: location option;
+}
 
-  type t =
-    | Syntax of syntax
-    | Internal of internal
-    | Comment_dropped of int
-
-  val to_string : t -> string
-end
+val error_to_string : error -> string
 
 type source_kind =
   | Impl
@@ -25,4 +20,4 @@ val check :
   ?jobs:int ->
   ?batch_size:int ->
   (source_kind * string) Seq.t ->
-  Error.t list Seq.t
+  error list Seq.t
