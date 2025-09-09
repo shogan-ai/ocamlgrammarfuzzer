@@ -1252,7 +1252,7 @@ let () =
       ~header:begin fun () ->
         Printf.printf "# Internal errors\n\n";
         Printf.printf
-          "When OCamlformat fails with an internal error, the exact location of
+          "When OCamlformat fails with an internal error, the exact location of \
            the problem cannot be determined.\n\
            The location is guessed by examining the syntactic constructions \
            that appear most frequently in the failing code.\n\n"
