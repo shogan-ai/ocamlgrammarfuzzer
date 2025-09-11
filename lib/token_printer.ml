@@ -147,7 +147,7 @@ let builtin = function
   | "UNIQUE"        -> "unique_"
   | "LBRACKETCOLON" -> "[:"
   | "HASH_SUFFIX"   -> "#"
-  | "HASH_INT"      -> "#1"
+  | "HASH_INT"      -> "#1l"
   | "HASH_FLOAT"    -> "#1.0"
   | "HASHLPAREN"    -> "#("
   | "AT"            -> "@"
