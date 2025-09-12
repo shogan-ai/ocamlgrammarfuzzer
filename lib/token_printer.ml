@@ -169,14 +169,8 @@ let for_grammar (grammar : _ Info.grammar) custom =
     match List.assoc_opt name custom with
     | Some txt -> txt
     | None ->
-      match
-        List.find_map (fun attr ->
-            if G.Attribute.label attr = "name"
-            then Some (G.Attribute.payload attr)
-            else None
-          ) attributes
-      with
-      | Some text -> text
+      match List.find_opt (fun attr -> G.Attribute.label attr = "name") attributes with
+      | Some attr -> G.Attribute.payload attr
       | None ->
         match builtin name with
         | txt -> txt
@@ -186,6 +180,6 @@ let for_grammar (grammar : _ Info.grammar) custom =
   match !unknown with
   | [] -> table
   | xs ->
-    prerr_endline "Unknown terminals:";
+    prerr_endline "Unknown terminals (pass --terminal 'name=text'):";
     List.iter prerr_endline xs;
     exit 1

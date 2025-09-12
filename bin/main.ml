@@ -20,6 +20,13 @@ let opt_ocamlformat = ref "ocamlformat"
 let opt_max_errors_report = ref 20
 let opt_jobs = ref 8
 let opt_batch_size = ref 80
+let opt_terminals = ref []
+let opt_cmly = ref ""
+
+let add_terminal str =
+  match String.split_on_char '=' str with
+  | [key; value] -> push opt_terminals (key, value)
+  | _ -> raise (Arg.Bad "Terminals should be specified using <name>=<text> syntax")
 
 let spec_list = [
   (* ("-n"         , Arg.Set_int opt_count, "<int> Number of lines to generate"  ); *)
@@ -42,6 +49,8 @@ let spec_list = [
   ("--max-report", Arg.Set_int opt_max_errors_report, " Maximum number of derivations to report per error (default: 20)");
   ("--jobs", Arg.Set_int opt_jobs, " Number of ocamlformat processes to run in parallel (default: 8)");
   ("--batch-size", Arg.Set_int opt_batch_size, " Number of files to submit to each ocamlformat process (default: 80)");
+  ("--terminal", Arg.String add_terminal, " Specify how a terminal should be printed; pass '--terminal INT=42' to print INT as '42'");
+  ("--cmly", Arg.Set_string opt_cmly, " Use grammar from the specified cmly file instead of builtin O(x)Caml grammar");
 ]
 
 let usage_msg = "Usage: ocamlgrammarfuzzer [options]"
@@ -59,9 +68,18 @@ let () = match !opt_seed with
 
 module Grammar = MenhirSdk.Cmly_read.FromString(struct
     let content =
-      if !opt_oxcaml
-      then Oxcaml_grammar.content
-      else Ocaml_grammar.content
+      if !opt_cmly <> "" then (
+        if !opt_oxcaml then
+          prerr_endline "--cmly: a grammar has been provided, ignoring --oxcaml";
+        let ic = open_in_bin !opt_cmly in
+        let length = in_channel_length ic in
+        let data = really_input_string ic length in
+        close_in ic;
+        data
+      ) else if !opt_oxcaml then
+        Oxcaml_grammar.content
+      else
+        Ocaml_grammar.content
   end)
 
 include Info.Lift(Grammar)
@@ -478,7 +496,7 @@ let () =
 
 (* Check we know how to print each terminal *)
 
-let terminal_text = Token_printer.for_grammar grammar []
+let terminal_text = Token_printer.for_grammar grammar !opt_terminals
 
 let generate_sentence ?(length=100) ?from () =
   let tr = match from with
