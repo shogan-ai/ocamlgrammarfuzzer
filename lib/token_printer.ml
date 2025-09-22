@@ -158,6 +158,10 @@ let builtin = function
   | "error" | "#" as x       -> x ^ "(*FIXME: Should not happen)"
   | _ -> raise Not_found
 
+let no_space_before_token = function
+  | "HASH_SUFFIX" -> true
+  | _ -> false
+
 let for_grammar (grammar : _ Info.grammar) custom =
   let (module G) = Info.raw grammar in
   let unknown = ref [] in
@@ -165,17 +169,21 @@ let for_grammar (grammar : _ Info.grammar) custom =
     Vector.init (Terminal.cardinal grammar) @@
     fun t ->
     let name = Terminal.to_string grammar t in
+    let kind = if no_space_before_token name then `Suffix else `Regular in
     let attributes = G.Terminal.attributes (G.Terminal.of_int (Index.to_int t)) in
-    match List.assoc_opt name custom with
-    | Some txt -> txt
-    | None ->
-      match List.find_opt (fun attr -> G.Attribute.label attr = "name") attributes with
-      | Some attr -> G.Attribute.payload attr
+    let text =
+      match List.assoc_opt name custom with
+      | Some txt -> txt
       | None ->
-        match builtin name with
-        | txt -> txt
-        | exception Not_found ->
-          push unknown name; name
+        match List.find_opt (fun attr -> G.Attribute.label attr = "name") attributes with
+        | Some attr -> G.Attribute.payload attr
+        | None ->
+          match builtin name with
+          | txt -> txt
+          | exception Not_found ->
+            push unknown name; name
+    in
+    (text, kind)
   in
   match !unknown with
   | [] -> table

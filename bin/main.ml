@@ -684,12 +684,14 @@ type error_kind =
 module Source_printer : sig
   type t
   val make : with_comments:bool -> unit -> t
-  val add_terminal : t -> string -> unit
+  val add_terminal : t -> g terminal index -> unit
 
   type source = string
   type locations
 
   val flush : t -> locations * source
+  (*val flush_only_source : t -> source*)
+  val flush_only_source_to_channel : t -> out_channel -> unit
 
   val classify_error_location : locations -> Ocamlformat.location -> error_kind * int
 end = struct
@@ -711,32 +713,34 @@ end = struct
     comment_locations = [];
   }
 
-  let startp t =
-    match Buffer.length t.buffer with
-    | 0 ->
+  let startp kind t =
+    match Buffer.length t.buffer, kind with
+    | 0, _ ->
       Buffer.add_string t.buffer padding;
       Buffer.length t.buffer
-    | n ->
+    | n, `Regular ->
       Buffer.add_char t.buffer ' ';
       (n + 1)
+    | n, `Suffix -> n
 
   let endp t = Buffer.length t.buffer
 
-  let add_comment t =
-    match t.comments with
-    | -1 -> ()
-    | number ->
+  let add_comment kind t =
+    match kind, t.comments with
+    | `Regular, -1 | `Suffix, _  -> ()
+    | `Regular, number ->
       t.comments <- number + 1;
-      let startp = startp t in
+      let startp = startp kind t in
       Printf.bprintf t.buffer "(* C%d *)" number;
       let endp = endp t in
       t.comment_locations <- (startp, endp) :: t.comment_locations
 
-  let add_terminal t = function
-    | "" -> ()
-    | text ->
-      add_comment t;
-      let startp = startp t in
+  let add_terminal t term =
+    match terminal_text.:(term) with
+    | "", _ -> ()
+    | text, kind ->
+      add_comment kind t;
+      let startp = startp kind t in
       Buffer.add_string t.buffer text;
       let endp = endp t in
       t.token_locations <- (startp, endp) :: t.token_locations
@@ -748,18 +752,39 @@ end = struct
     comments: (int * int) array;
   }
 
-  let flush t =
-    add_comment t;
+  let flush_source t =
+    add_comment `Regular t;
     let source = Buffer.contents t.buffer in
-    Buffer.clear t.buffer;
-    if t.comments > -1 then
-      t.comments <- 0;
+    source
+
+  let get_locations t =
     let prepare_locations l = Array.of_list (List.rev l) in
     let tokens = prepare_locations t.token_locations in
     let comments = prepare_locations t.comment_locations in
+    {tokens; comments}
+
+  let reset t =
+    Buffer.clear t.buffer;
+    if t.comments > -1 then
+      t.comments <- 0;
     t.token_locations <- [];
-    t.comment_locations <- [];
-    ({tokens; comments}, source)
+    t.comment_locations <- []
+
+  let flush t =
+    let source = flush_source t in
+    let locations = get_locations t in
+    reset t;
+    (locations, source)
+
+  (*let flush_only_source t =
+    let source = flush_source t in
+    reset t;
+    source*)
+
+  let flush_only_source_to_channel t oc =
+    add_comment `Regular t;
+    Buffer.output_buffer oc t.buffer;
+    reset t
 
   let classify_error_location l {Ocamlformat. line; start_col; end_col; _} =
     if line <> 1 then
@@ -798,7 +823,7 @@ module Sample_sentence_printer : sig
   type t
 
   val make : with_comment:bool -> position:int option -> t
-  val add_terminal : t -> string -> unit
+  val add_terminal : t -> g terminal index -> unit
   val flush : t -> string list
 end = struct
   type t = {
@@ -819,21 +844,24 @@ end = struct
     endp = 0;
   }
 
-  let startp t =
-    match Buffer.length t.buffer with
-    | 0 -> 0
-    | n -> Buffer.add_char t.buffer ' '; (n + 1)
+  let startp kind t =
+    match Buffer.length t.buffer, kind with
+    | 0, _ -> 0
+    | n, `Regular -> Buffer.add_char t.buffer ' '; (n + 1)
+    | n, `Suffix -> n
 
-  let add_terminal t text =
+  let add_terminal t term =
+    let text, kind = terminal_text.:(term) in
     if t.count = -1 then
       invalid_arg "Sample_sentence_printer.add_terminal: buffer already flushed";
     if text <> "" then (
-      let startp = startp t in
+      let startp = startp kind t in
       if t.position = t.count then (
+        let comment = t.with_comment && kind = `Regular in
         t.startp <- startp;
-        Buffer.add_string t.buffer (if t.with_comment then "(* ... *)" else text);
+        Buffer.add_string t.buffer (if comment then "(* ... *)" else text);
         t.endp <- Buffer.length t.buffer;
-        if t.with_comment then (
+        if comment then (
           Buffer.add_char t.buffer ' ';
           Buffer.add_string t.buffer text
         )
@@ -877,8 +905,7 @@ let derivation_kind der =
     Ocamlformat.Impl
 
 let prepare_derivation_for_check printer der =
-  Derivation.iter_terminals der
-    ~f:(fun t -> Source_printer.add_terminal printer terminal_text.:(t));
+  Derivation.iter_terminals der ~f:(Source_printer.add_terminal printer);
   let locations, source = Source_printer.flush printer in
   (derivation_kind der, locations, source)
 
@@ -940,7 +967,7 @@ let report_error_samples ~with_comment errors =
     let position = sample.position in
     let printer = Sample_sentence_printer.make ~with_comment ~position in
     Derivation.iter_terminals sample.derivation
-      ~f:(fun t -> Sample_sentence_printer.add_terminal printer terminal_text.:(t));
+      ~f:(Sample_sentence_printer.add_terminal printer);
     List.iter (Printf.printf "  %s\n") (Sample_sentence_printer.flush printer);
     Printf.printf "  ```\n";
   end;
@@ -1202,26 +1229,8 @@ let report_non_located_errors derivations outcome kind ~header =
   Printf.printf "\n"
 
 let () =
-  let output_with_comments oc =
-    let count = ref 0 in
-    fun t ->
-      if !count > 0 then output_char oc ' ';
-      Printf.fprintf oc "(* C%d *) %s" !count terminal_text.:(t);
-      incr count
-  in
-  let directly_output oc =
-    let need_sep = ref false in
-    fun t ->
-      if !need_sep then output_char oc ' ';
-      need_sep := true;
-      output_string oc terminal_text.:(t)
-  in
   if not !opt_ocamlformat_check then (
-    let output_terminal () =
-      if !opt_comments
-      then output_with_comments stdout
-      else directly_output stdout
-    in
+    let printer = Source_printer.make ~with_comments:!opt_comments () in
     Seq.iter begin fun der ->
       if !opt_print_entrypoint then (
         let entrypoint =
@@ -1233,7 +1242,8 @@ let () =
         output_string stdout (Symbol.name grammar entrypoint);
         output_string stdout ": ";
       );
-      Derivation.iter_terminals ~f:(output_terminal ()) der;
+      Derivation.iter_terminals ~f:(Source_printer.add_terminal printer) der;
+      Source_printer.flush_only_source_to_channel printer stdout;
       output_char stdout '\n'
     end derivations
   ) else (
