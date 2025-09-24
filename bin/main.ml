@@ -683,7 +683,7 @@ type error_kind =
 
 module Source_printer : sig
   type t
-  val make : with_comments:bool -> unit -> t
+  val make : with_padding:bool -> with_comments:bool -> unit -> t
   val add_terminal : t -> g terminal index -> unit
 
   type source = string
@@ -701,13 +701,15 @@ end = struct
 
   type t = {
     buffer: Buffer.t;
+    with_padding: bool;
     mutable comments: int;
     mutable token_locations: location list;
     mutable comment_locations: location list;
   }
 
-  let make ~with_comments () = {
+  let make ~with_padding ~with_comments () = {
     comments = if with_comments then 0 else (-1);
+    with_padding;
     buffer = Buffer.create 63;
     token_locations = [];
     comment_locations = [];
@@ -716,7 +718,8 @@ end = struct
   let startp kind t =
     match Buffer.length t.buffer, kind with
     | 0, _ ->
-      Buffer.add_string t.buffer padding;
+      if t.with_padding then
+        Buffer.add_string t.buffer padding;
       Buffer.length t.buffer
     | n, `Regular ->
       Buffer.add_char t.buffer ' ';
@@ -1230,7 +1233,9 @@ let report_non_located_errors derivations outcome kind ~header =
 
 let () =
   if not !opt_ocamlformat_check then (
-    let printer = Source_printer.make ~with_comments:!opt_comments () in
+    let printer =
+      Source_printer.make ~with_padding:false ~with_comments:!opt_comments ()
+    in
     Seq.iter begin fun der ->
       if !opt_print_entrypoint then (
         let entrypoint =
@@ -1249,7 +1254,7 @@ let () =
   ) else (
     let derivations = Array.of_seq derivations in
     let sources =
-      let printer = Source_printer.make ~with_comments:!opt_comments () in
+      let printer = Source_printer.make ~with_padding:true ~with_comments:!opt_comments () in
       Array.map (prepare_derivation_for_check printer) derivations
     in
     let outcome =
