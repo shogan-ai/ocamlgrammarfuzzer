@@ -19,7 +19,7 @@ let opt_ocamlformat_check = ref false
 let opt_ocamlformat = ref "ocamlformat"
 let opt_max_errors_report = ref 20
 let opt_jobs = ref 8
-let opt_batch_size = ref 80
+let opt_batch_size = ref 400
 let opt_terminals = ref []
 let opt_cmly = ref ""
 
