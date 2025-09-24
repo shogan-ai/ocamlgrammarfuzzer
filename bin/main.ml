@@ -23,34 +23,51 @@ let opt_batch_size = ref 400
 let opt_terminals = ref []
 let opt_cmly = ref ""
 
+let opt_save_report = ref "-"
+let opt_save_successful = ref ""
+let opt_save_lexer_errors = ref ""
+let opt_save_parser_errors = ref ""
+let opt_save_invariant_errors = ref ""
+let opt_save_internal_errors = ref ""
+let opt_save_comment_errors = ref ""
+
 let add_terminal str =
   match String.split_on_char '=' str with
   | [key; value] -> push opt_terminals (key, value)
   | _ -> raise (Arg.Bad "Terminals should be specified using <name>=<text> syntax")
 
 let spec_list = [
-  (* ("-n"         , Arg.Set_int opt_count, "<int> Number of lines to generate"  ); *)
+  (* Controlling generation *)
   ("--count"    , Arg.Set_int opt_count, "<int> Number of lines to generate"  );
-  (* ("-c"         , Arg.Set opt_comments , " Generate fake comments in the lines"); *)
-  ("--comments" , Arg.Set opt_comments , " Generate fake comments in the lines");
-  (* ("-l"         , Arg.Set_int opt_length, "<int> Number of token per sentence"); *)
   ("--length"   , Arg.Set_int opt_length, "<int> Number of token per sentence");
   ("--seed"     , Arg.Set_int opt_seed, "<int> Random seed");
-  ("--oxcaml"   , Arg.Set opt_oxcaml, " Work with Oxcaml dialect");
-  ("-v"         , Arg.Unit (fun () -> incr Misc.verbosity_level), " Increase verbosity");
-  ("--entrypoint", Arg.String (push opt_entrypoints), " Generate sentences from this entrypoint");
-  ("--print-entrypoint", Arg.Set opt_print_entrypoint, " Prefix every sentence by the entrypoint followed by ':'");
-  ("--weight", Arg.String (push opt_weights), " Adjust the weights of grammatical constructions");
-  ("--avoid", Arg.String (push opt_avoid), " Forbid grammatical constructions");
-  ("--focus", Arg.String (push opt_focus), " Generate sentences stressing a grammatical construction");
+  ("--entrypoint", Arg.String (push opt_entrypoints), "<symbol> Generate sentences from this entrypoint");
+  ("--weight", Arg.String (push opt_weights), "<float> <pattern> Adjust the weights of grammatical constructions");
+  ("--avoid", Arg.String (push opt_avoid), "<pattern> Forbid grammatical constructions");
+  ("--focus", Arg.String (push opt_focus), "<pattern> Generate sentences stressing specific grammatical constructions");
   ("--exhaust", Arg.Set opt_exhaust, " Exhaust mode generates a deterministic set of sentences that cover all reachable constructions");
-  ("--ocamlformat", Arg.Set_string opt_ocamlformat, " Path to OCamlformat command to use");
-  ("--ocamlformat-check", Arg.Set opt_ocamlformat_check, " Check generated sentences with ocamlformat (default is to print them)");
-  ("--max-report", Arg.Set_int opt_max_errors_report, " Maximum number of derivations to report per error (default: 20)");
-  ("--jobs", Arg.Set_int opt_jobs, " Number of ocamlformat processes to run in parallel (default: 8)");
-  ("--batch-size", Arg.Set_int opt_batch_size, " Number of files to submit to each ocamlformat process (default: 80)");
+  ("--ocamlformat", Arg.Set_string opt_ocamlformat, "<path> OCamlformat command to use");
+  ("--oxcaml"   , Arg.Set opt_oxcaml, " Work with Oxcaml dialect");
+  ("--cmly", Arg.Set_string opt_cmly, "<path.cmly> Use grammar from the specified cmly file instead of builtin O(x)Caml grammar");
+  (* Printer configuration *)
+  ("--comments" , Arg.Set opt_comments , " Generate fake comments in the lines");
+  ("--print-entrypoint", Arg.Set opt_print_entrypoint, " Prefix every sentence by the entrypoint followed by ':'");
   ("--terminal", Arg.String add_terminal, " Specify how a terminal should be printed; pass '--terminal INT=42' to print INT as '42'");
-  ("--cmly", Arg.Set_string opt_cmly, " Use grammar from the specified cmly file instead of builtin O(x)Caml grammar");
+  (* Ocamlformat invocation setting *)
+  ("--jobs", Arg.Set_int opt_jobs, "<int> Number of ocamlformat processes to run in parallel (default: 8)");
+  ("--batch-size", Arg.Set_int opt_batch_size, "<int> Number of files to submit to each ocamlformat process (default: 400)");
+  (* Check mode *)
+  ("--ocamlformat-check"        , Arg.Set opt_ocamlformat_check, " Check mode: check generated sentences with ocamlformat (default is to print them)");
+  ("--save-report-to"           , Arg.Set_string opt_save_report, "<path> In check mode, classify and report detected problems to a faile (default to stdout)");
+  ("--max-report"               , Arg.Set_int opt_max_errors_report, "<int> Maximum number of derivations to report per error (default: 20)");
+  ("--save-successful-to"       , Arg.Set_string opt_save_successful, "<path> In check mode, save successful sentences to a file");
+  ("--save-lexer-errors-to"     , Arg.Set_string opt_save_lexer_errors, "<path> In check mode, save lexer errors to a file");
+  ("--save-parser-errors-to"    , Arg.Set_string opt_save_parser_errors, "<path> In check mode, save parser errors to a file");
+  ("--save-invariant-errors-to" , Arg.Set_string opt_save_invariant_errors, "<path> In check mode, save invariant errors to a file");
+  ("--save-comment-errors-to"   , Arg.Set_string opt_save_comment_errors, "<path> In check mode, save comment errors to a file");
+  ("--save-internal-errors-to"  , Arg.Set_string opt_save_internal_errors, "<path> In check mode, save internal errors (including red herring) to a file");
+  (* Misc *)
+  ("-v"         , Arg.Unit (fun () -> incr Misc.verbosity_level), " Increase verbosity");
 ]
 
 let usage_msg = "Usage: ocamlgrammarfuzzer [options]"
@@ -926,7 +943,7 @@ let plural = function
   | [] | [_] -> ""
   | _ -> "s"
 
-let report_error_samples ~with_comment errors =
+let report_error_samples oc ~with_comment errors =
   let exception Exit_iter in
   let iter_by ~compare xs f =
     try
@@ -941,19 +958,19 @@ let report_error_samples ~with_comment errors =
   in
   iter_by errors ~compare:compare_path begin fun i e es ->
     if i > !opt_max_errors_report then (
-      Printf.printf "- ...\n";
+      Printf.fprintf oc "- ...\n";
       raise Exit_iter
     );
-    Printf.printf "- Derivation (%d occurrence%s):\n"
+    Printf.fprintf oc "- Derivation (%d occurrence%s):\n"
       (1 + List.length es)
       (plural (e :: es));
-    Printf.printf "  ```\n";
+    Printf.fprintf oc "  ```\n";
     List.iteri begin fun i x ->
-      Printf.printf "  %s%s\n"
+      Printf.fprintf oc "  %s%s\n"
         (String.make (2 * i) ' ')
         (Item.to_string grammar x);
     end (List.rev e.path);
-    Printf.printf "  ```\n";
+    Printf.fprintf oc "  ```\n";
     let sample = List.fold_left
         (fun e e' ->
            if Derivation.length e'.derivation <
@@ -962,21 +979,21 @@ let report_error_samples ~with_comment errors =
            else e
         ) e es
     in
-    Printf.printf "  Sample sentence (%s):\n"
+    Printf.fprintf oc "  Sample sentence (%s):\n"
       (match sample.source_kind with
        | Ocamlformat.Impl -> "implementation"
        | Intf -> "interface");
-    Printf.printf "  ```ocaml\n";
+    Printf.fprintf oc "  ```ocaml\n";
     let position = sample.position in
     let printer = Sample_sentence_printer.make ~with_comment ~position in
     Derivation.iter_terminals sample.derivation
       ~f:(Sample_sentence_printer.add_terminal printer);
-    List.iter (Printf.printf "  %s\n") (Sample_sentence_printer.flush printer);
-    Printf.printf "  ```\n";
+    List.iter (Printf.fprintf oc "  %s\n") (Sample_sentence_printer.flush printer);
+    Printf.fprintf oc "  ```\n";
   end;
-  Printf.printf "\n"
+  Printf.fprintf oc "\n"
 
-let report_located_errors derivations outcome =
+let report_located_errors oc derivations outcome =
   (* Filter and group common errors by message *)
   let by_message = Hashtbl.create 7 in
   Array.iteri begin fun i (source_kind, errors) ->
@@ -1045,23 +1062,23 @@ let report_located_errors derivations outcome =
     match List.rev !r with
     | [] -> ()
     | group ->
-      Printf.printf "# %s\n\n" title;
+      Printf.fprintf oc "# %s\n\n" title;
       header ();
-      Printf.printf "\n\n";
+      Printf.fprintf oc "\n\n";
       List.iter begin fun (message, errors) ->
-        Printf.printf "## %s\n" message;
+        Printf.fprintf oc "## %s\n" message;
         List.iter begin fun (item, errors) ->
-          Printf.printf "\n### Item `%s` (in %d error%s)\n\n"
+          Printf.fprintf oc "\n### Item `%s` (in %d error%s)\n\n"
             (Item.to_string grammar item)
             (List.length errors) (plural errors);
-          report_error_samples ~with_comment errors;
+          report_error_samples oc ~with_comment errors;
         end errors
       end group;
-      Printf.printf "\n"
+      Printf.fprintf oc "\n"
   in
   report_kind ~with_comment:false "Parser errors"    all_syntax_errors
     ~header:begin fun () ->
-      Printf.printf
+      Printf.fprintf oc
         "A parser error is reported when OCamlformat rejects an input \
          on a specific token.\n\
          The error location is the token that caused the failure; \n\
@@ -1069,7 +1086,7 @@ let report_located_errors derivations outcome =
     end;
   report_kind ~with_comment:false "Lexer errors"     all_lexer_errors
     ~header:begin fun () ->
-      Printf.printf
+      Printf.fprintf oc
         "A lexer error is reported when OCamlformat rejected an input on a \
          location that does not form a complete token for the fuzzer.\n\
          This usually indicates a mismatch between the lexical specification \
@@ -1078,14 +1095,14 @@ let report_located_errors derivations outcome =
     end;
   report_kind ~with_comment:true  "Comment errors"   all_comment_errors
     ~header:begin fun () ->
-      Printf.printf
+      Printf.fprintf oc
         "These are errors OCamlformat reports while processing a comment.\n\
          They usually mean that the comment was not preserved by the formatting \
          process (e.g., it was dropped or moved)."
     end;
   report_kind ~with_comment:false "Invariant errors" all_invariant_errors
     ~header:begin fun () ->
-      Printf.printf
+      Printf.fprintf oc
         "Invariant errors are grammatical violations that span more than one \
          token and are detected by semantic actions after parsing.\n\
          They are not produced by Menhir itself but by checks that enforce \
@@ -1096,7 +1113,7 @@ let report_located_errors derivations outcome =
          such errors may appear as false positives."
     end
 
-let report_non_located_errors derivations outcome kind ~header =
+let report_non_located_errors oc derivations outcome kind ~header =
   (* Filter and group by error message *)
   let by_message = Hashtbl.create 7 in
   let highly_safe_cells = Boolvector.make Reach.Cell.n false in
@@ -1215,127 +1232,187 @@ let report_non_located_errors derivations outcome kind ~header =
   in
   let heap = Occurrence_heap.make (Item.cardinal grammar) in
   Array.iteri begin fun i (message, _, errors) ->
-    if i = 0 then header ();
-    Printf.printf "## %s (%d error%s)\n" message (List.length errors) (plural errors);
+    if i = 0 then header oc;
+    Printf.fprintf oc "## %s (%d error%s)\n" message (List.length errors) (plural errors);
     (* Errors by most frequent items *)
     List.iter
       (fun (items, error) -> Occurrence_heap.add heap items error)
       errors;
     Seq.iter (fun (item, errors) ->
-        Printf.printf "\n### Item `%s` (in %d error%s)\n\n"
+        Printf.fprintf oc "\n### Item `%s` (in %d error%s)\n\n"
           (Item.to_string grammar item)
           (List.length errors) (plural errors);
-        report_error_samples ~with_comment:false
+        report_error_samples oc ~with_comment:false
           (List.map (annotate_with_item item) errors);
       ) (Occurrence_heap.pop_seq heap)
   end by_message;
-  Printf.printf "\n"
+  Printf.fprintf oc "\n"
+
+(* default mode: just output a list of sentences *)
+
+let print_mode () =
+  let printer =
+    Source_printer.make ~with_padding:false ~with_comments:!opt_comments ()
+  in
+  Seq.iter begin fun der ->
+    if !opt_print_entrypoint then (
+      let entrypoint =
+        let node, _, _ = Reach.Cell.decode (Derivation.meta der) in
+        match Reach.Tree.split node with
+        | R _ -> assert false
+        | L tr -> Transition.symbol grammar tr
+      in
+      output_string stdout (Symbol.name grammar entrypoint);
+      output_string stdout ": ";
+    );
+    Derivation.iter_terminals ~f:(Source_printer.add_terminal printer) der;
+    Source_printer.flush_only_source_to_channel printer stdout;
+    output_char stdout '\n'
+  end derivations
+
+(* check mode: stress ocamlformat, classify outputs *)
+
+let internal_error_header oc =
+  Printf.fprintf oc "# Internal errors\n\n";
+  Printf.fprintf oc
+    "When OCamlformat fails with an internal error, the exact location of \
+     the problem cannot be determined.\n\
+     The location is guessed by examining the syntactic constructions \
+     that appear most frequently in the failing code.\n\n"
+
+let red_herring_header oc =
+  Printf.fprintf oc "# Red herrings\n\n";
+  Printf.fprintf oc
+    "Red herrings are errors for which OCamlformat reports an invalid location.\n\
+     This can happen, for example, if the formatter succeeds on the first pass but \
+     fails on a subsequent one, causing the error to refer to a location in an \
+     intermediate file that is not visible to end users.\n\
+     Note that, as with internal errors, the exact location of the problem \
+     cannot be determined.\n\
+     The location is guessed by inspecting the syntactic constructions that appear \
+     most frequently in the failing code.\n\n"
+
+let check_mode () =
+  let outputs = ref [] in
+  let get_output = function
+    | "" -> invalid_arg "get_output: empty name"
+    | "-" -> stdout
+    | name ->
+      match List.assoc_opt name !outputs with
+      | Some oc -> oc
+      | None ->
+        let oc = open_out_bin name in
+        push outputs (name, oc);
+        oc
+  in
+  let close_outputs () =
+    List.iter (fun (_, oc) -> close_out oc) !outputs;
+    outputs := []
+  in
+  let derivations = Array.of_seq derivations in
+  let sources =
+    let printer = Source_printer.make ~with_padding:true ~with_comments:!opt_comments () in
+    Array.map (prepare_derivation_for_check printer) derivations
+  in
+  let outcome =
+    Array.to_seq sources
+    |> Seq.map (fun (k,_,s)  -> (k, s))
+    |> Ocamlformat.check
+      ~ocamlformat_command:!opt_ocamlformat
+      ~jobs:(Int.max 0 !opt_jobs)
+      ~batch_size:(Int.max 1 !opt_batch_size)
+    |> Seq.mapi begin fun i errors ->
+      let source_kind, locations, _ = sources.(i) in
+      let errors =
+        List.map begin fun error ->
+          let kind, position = match error.Ocamlformat.location with
+            | None -> (Internal_error, -1)
+            | Some loc ->
+              Source_printer.classify_error_location locations loc
+          in
+          (kind, position, error)
+        end errors
+      in
+      (source_kind, errors)
+    end
+    |> Array.of_seq
+  in
+  let report = get_output !opt_save_report in
+  report_located_errors report derivations outcome;
+  report_non_located_errors report derivations outcome Internal_error
+    ~header:internal_error_header;
+  report_non_located_errors report derivations outcome Red_herring
+    ~header:red_herring_header;
+  let valid = ref 0 in
+  let syntax_errors = ref 0 in
+  let with_comments_dropped = ref 0 in
+  let comments_dropped = ref 0 in
+  let internal_errors = ref 0 in
+  Array.iter begin fun (_, errors) ->
+    match errors with
+    | [] -> incr valid;
+    | errors ->
+      let had_comments_dropped = ref false in
+      List.iter begin fun (kind, _, _) ->
+        match kind with
+        | Syntax | Lexer | Syntactic_invariant -> incr syntax_errors;
+        | Comment ->
+          if not !had_comments_dropped then (
+            incr with_comments_dropped;
+            had_comments_dropped := true;
+          );
+          incr comments_dropped;
+        | Red_herring | Internal_error ->
+          incr internal_errors
+      end errors
+  end outcome;
+  let count = Array.length outcome in
+  let percent x = 100.0 *. float x /. float count in
+  Printf.eprintf "Tested %d sentences:\n\
+                  - %d successfully formated (%.02f%%)\n\
+                  - %d failed with syntax errors (%.02f%%)\n\
+                  - %d had comments dropped (%.02f%%) (%d comments were dropped in total)\n\
+                  - %d caused internal errors (%.02f%%)\n%!"
+    count
+    !valid            (percent !valid)
+    !syntax_errors    (percent !syntax_errors)
+    !with_comments_dropped (percent !with_comments_dropped) !comments_dropped
+    !internal_errors  (percent !internal_errors);
+  let output_sentences path pred =
+    if path <> "" then
+      let oc = get_output path in
+      Array.iteri begin fun i (_, errors) ->
+        if pred errors then
+          let kind, _, source = sources.(i) in
+          let prefix = match kind with
+            | Intf -> "interface: "
+            | Impl -> "implementation: "
+          in
+          output_string oc prefix;
+          output_string oc (String.trim source);
+          output_char oc '\n'
+        end outcome
+  in
+  (* Save sentences by error class *)
+  let has_kind kind errors =
+    List.exists (fun (kind', _, _) -> kind = kind') errors
+  in
+  output_sentences !opt_save_successful
+    (List.is_empty);
+  output_sentences !opt_save_lexer_errors
+    (has_kind Lexer);
+  output_sentences !opt_save_parser_errors
+    (has_kind Syntax);
+  output_sentences !opt_save_invariant_errors
+    (has_kind Syntactic_invariant);
+  output_sentences !opt_save_internal_errors
+    (fun errs -> has_kind Internal_error errs ||
+                 has_kind Red_herring errs);
+  output_sentences !opt_save_comment_errors (has_kind Comment);
+  close_outputs ()
 
 let () =
-  if not !opt_ocamlformat_check then (
-    let printer =
-      Source_printer.make ~with_padding:false ~with_comments:!opt_comments ()
-    in
-    Seq.iter begin fun der ->
-      if !opt_print_entrypoint then (
-        let entrypoint =
-          let node, _, _ = Reach.Cell.decode (Derivation.meta der) in
-          match Reach.Tree.split node with
-          | R _ -> assert false
-          | L tr -> Transition.symbol grammar tr
-        in
-        output_string stdout (Symbol.name grammar entrypoint);
-        output_string stdout ": ";
-      );
-      Derivation.iter_terminals ~f:(Source_printer.add_terminal printer) der;
-      Source_printer.flush_only_source_to_channel printer stdout;
-      output_char stdout '\n'
-    end derivations
-  ) else (
-    let derivations = Array.of_seq derivations in
-    let sources =
-      let printer = Source_printer.make ~with_padding:true ~with_comments:!opt_comments () in
-      Array.map (prepare_derivation_for_check printer) derivations
-    in
-    let outcome =
-      Array.to_seq sources
-      |> Seq.map (fun (k,_,s)  -> (k, s))
-      |> Ocamlformat.check
-        ~ocamlformat_command:!opt_ocamlformat
-        ~jobs:(Int.max 0 !opt_jobs)
-        ~batch_size:(Int.max 1 !opt_batch_size)
-      |> Seq.mapi begin fun i errors ->
-        let source_kind, locations, _ = sources.(i) in
-        let errors =
-          List.map begin fun error ->
-            let kind, position = match error.Ocamlformat.location with
-              | None -> (Internal_error, -1)
-              | Some loc ->
-                Source_printer.classify_error_location locations loc
-            in
-            (kind, position, error)
-          end errors
-        in
-        (source_kind, errors)
-      end
-      |> Array.of_seq
-    in
-    report_located_errors derivations outcome;
-    report_non_located_errors derivations outcome Internal_error
-      ~header:begin fun () ->
-        Printf.printf "# Internal errors\n\n";
-        Printf.printf
-          "When OCamlformat fails with an internal error, the exact location of \
-           the problem cannot be determined.\n\
-           The location is guessed by examining the syntactic constructions \
-           that appear most frequently in the failing code.\n\n"
-      end;
-    report_non_located_errors derivations outcome Red_herring
-      ~header:begin fun () ->
-        Printf.printf "# Red herrings\n\n";
-        Printf.printf
-          "Red herrings are errors for which OCamlformat reports an invalid location.\n\
-           This can happen, for example, if the formatter succeeds on the first pass but \
-           fails on a subsequent one, causing the error to refer to a location in an \
-           intermediate file that is not visible to end users.\n\
-           Note that, as with internal errors, the exact location of the problem \
-           cannot be determined.\n\
-           The location is guessed by inspecting the syntactic constructions that appear \
-           most frequently in the failing code.\n\n"
-      end;
-    let valid = ref 0 in
-    let syntax_errors = ref 0 in
-    let with_comments_dropped = ref 0 in
-    let comments_dropped = ref 0 in
-    let internal_errors = ref 0 in
-    Array.iter begin fun (_, errors) ->
-      match errors with
-      | [] -> incr valid;
-      | errors ->
-        let had_comments_dropped = ref false in
-        List.iter begin fun (kind, _, _) ->
-          match kind with
-          | Syntax | Lexer | Syntactic_invariant -> incr syntax_errors;
-          | Comment ->
-            if not !had_comments_dropped then (
-              incr with_comments_dropped;
-              had_comments_dropped := true;
-            );
-            incr comments_dropped;
-          | Red_herring | Internal_error ->
-            incr internal_errors
-        end errors
-    end outcome;
-    let count = Array.length outcome in
-    let percent x = 100.0 *. float x /. float count in
-    Printf.eprintf "Tested %d sentences:\n\
-                    - %d successfully formated (%.02f%%)\n\
-                    - %d failed with syntax errors (%.02f%%)\n\
-                    - %d had comments dropped (%.02f%%) (%d comments were dropped in total)\n\
-                    - %d caused internal errors (%.02f%%)\n%!"
-      count
-      !valid            (percent !valid)
-      !syntax_errors    (percent !syntax_errors)
-      !with_comments_dropped (percent !with_comments_dropped) !comments_dropped
-      !internal_errors  (percent !internal_errors);
-  )
+  if !opt_ocamlformat_check then
+    check_mode ()
+  else
+    print_mode ()
