@@ -1,7 +1,5 @@
 open Utils.Misc
 
-let debug = false
-
 type location = {
     line : int;
     start_col: int;
@@ -23,10 +21,9 @@ let error_to_string {message; location} =
     Printf.sprintf "error: line %d.%d-%d: %s"
       line start_col end_col message
 
-let input_line ic =
+let input_line ?(debug=ignore) ic =
   let result = input_line ic in
-  if debug then
-    Printf.eprintf "> %s\n" result;
+  debug result;
   result
 
 module Output_parser = struct
@@ -75,7 +72,7 @@ module Output_parser = struct
                else
                  failwithf "Unexpected line %S" text
          in
-         match match_terminator (input_line ic) with
+         match match_terminator (ic ()) with
          | Some result -> result
          | _ ->
            let caret = ref false in
@@ -84,11 +81,11 @@ module Output_parser = struct
              | '^' -> caret := true; true
              | _ -> false
            in
-           while not (String.for_all pred (input_line ic)) do
+           while not (String.for_all pred (ic ())) do
              caret := false
            done;
-           let text = input_line ic in
-           match match_terminator  text with
+           let text = ic () in
+           match match_terminator text with
            | None -> failwithf "Unexpected line %S (looking for error terminator)" text
            | Some result -> result
       )
@@ -117,7 +114,7 @@ module Output_parser = struct
     Scanf.sscanf_opt text
       {|%s@: Cannot process %S.|}
       (fun _ocamlformat input ->
-         match input_line ic with
+         match ic () with
          | "  Please report this bug at https://github.com/ocaml-ppx/ocamlformat/issues." ->
            input
          | line -> failwithf "driver: %s: unexpected error header: %s" input line
@@ -125,14 +122,14 @@ module Output_parser = struct
 
   let error_message_3_part_2 text ic =
     if text = "  BUG: unhandled exception." then
-      Some (error ("Exception: " ^ input_line ic))
+      Some (error ("Exception: " ^ ic ()))
     else if String.starts_with ~prefix:"  BUG: " text then
       Some (error (String.trim text))
     else
       None
 
   let rec next_error buggy_input ic =
-    match input_line ic with
+    match ic () with
     | exception End_of_file -> None
     | "" -> next_error buggy_input ic
     | line ->
@@ -224,8 +221,8 @@ let start_batch ~ocamlformat_command = function
         output_string oc source;
         output_char oc '\n';
         close_out oc;
-        if debug then
-          Printf.eprintf "<%s: %s\n" path source;
+        (*if debug then
+          Printf.eprintf "<%s: %s\n" path source;*)
         path
       ) inputs
     in
@@ -237,11 +234,12 @@ let start_batch ~ocamlformat_command = function
     in
     Some (files, process)
 
-let consume_batch = function
+let consume_batch ?debug_line = function
   | None -> Seq.empty
   | Some (files, (_, _, pstderr as process)) ->
     let errors =
-      let r = Output_parser.read_errors pstderr in
+      let line () = input_line ?debug:debug_line pstderr in
+      let r = Output_parser.read_errors line in
       List.iter (fun x -> try Unix.unlink x with _ -> ()) files;
       ignore (Unix.close_process_full process);
       Output_parser.rev_cleanup_errors r
@@ -295,6 +293,7 @@ let overlapping_force jobs seq =
 let check
     ?(ocamlformat_command="ocamlformat")
     ?(jobs=0) ?(batch_size=default_batch_size)
+    ?debug_line
     seq
   =
   seq
@@ -305,4 +304,4 @@ let check
   |> (* Force sequence enough items ahead to kick [jobs] processes ahead *)
   overlapping_force jobs
   |> (* Collect the results *)
-  Seq.concat_map consume_batch
+  Seq.concat_map (consume_batch ?debug_line)

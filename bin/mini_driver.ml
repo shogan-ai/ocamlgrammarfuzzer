@@ -2,9 +2,15 @@ open Utils.Misc
 open Grammarfuzzer
 
 let opt_ocamlformat = ref "ocamlformat"
+let opt_raw_output = ref false
+let opt_jobs = ref 8
+let opt_batch_size = ref 400
 
 let spec_list = [
   ("--ocamlformat", Arg.Set_string opt_ocamlformat, " Path to OCamlformat command to use");
+  ("--jobs", Arg.Set_int opt_jobs, "<int> Number of ocamlformat processes to run in parallel (default: 8)");
+  ("--batch-size", Arg.Set_int opt_batch_size, "<int> Number of files to submit to each ocamlformat process (default: 400)");
+  ("--raw-output", Arg.Set opt_raw_output, " Output raw messages from ocamlformat on stderr");
 ]
 
 let usage_msg =
@@ -46,7 +52,11 @@ let infer_kind sentence =
 let () =
   read_lines ic
   |> Seq.map infer_kind
-  |> Ocamlformat.check ~ocamlformat_command:!opt_ocamlformat ~jobs:8
+  |> Ocamlformat.check
+    ~ocamlformat_command:!opt_ocamlformat
+    ~jobs:(Int.max 0 !opt_jobs)
+    ~batch_size:(Int.max 1 !opt_batch_size)
+    ~debug_line:(if !opt_raw_output then prerr_endline else ignore)
   |> Seq.iteri begin fun i errors ->
     List.iter begin fun error ->
       Printf.printf "line %06d: %s\n"
