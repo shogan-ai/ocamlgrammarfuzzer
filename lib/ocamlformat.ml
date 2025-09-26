@@ -209,7 +209,7 @@ type source_kind =
   | Impl
   | Intf
 
-let start_batch ~ocamlformat_command = function
+let start_batch ?debug_line ~ocamlformat_command = function
   | [] -> None
   | inputs ->
     let id = !batch_ids in
@@ -221,8 +221,10 @@ let start_batch ~ocamlformat_command = function
         output_string oc source;
         output_char oc '\n';
         close_out oc;
-        (*if debug then
-          Printf.eprintf "<%s: %s\n" path source;*)
+        begin match debug_line with
+          | None -> ()
+          | Some f -> Printf.ksprintf f "<%s: %s\n" path source;
+        end;
         path
       ) inputs
     in
@@ -300,7 +302,7 @@ let check
   |> (* Group by batches of appropriate size *)
   batch_by ~size:batch_size
   |> (* Launch a process for each batch *)
-  Seq.map (start_batch ~ocamlformat_command)
+  Seq.map (start_batch ?debug_line ~ocamlformat_command)
   |> (* Force sequence enough items ahead to kick [jobs] processes ahead *)
   overlapping_force jobs
   |> (* Collect the results *)
