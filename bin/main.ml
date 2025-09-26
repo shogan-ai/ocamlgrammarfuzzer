@@ -4,7 +4,7 @@ open Utils
 open Misc
 open Grammarfuzzer
 
-let opt_count = ref 1
+let opt_count = ref 0
 let opt_length = ref 100
 let opt_comments = ref false
 let opt_seed = ref (-1)
@@ -22,6 +22,7 @@ let opt_jobs = ref 8
 let opt_batch_size = ref 400
 let opt_terminals = ref []
 let opt_cmly = ref ""
+let opt_print_derivations = ref []
 
 let opt_save_report = ref "-"
 let opt_save_successful = ref ""
@@ -68,6 +69,7 @@ let spec_list = [
   ("--save-internal-errors-to"  , Arg.Set_string opt_save_internal_errors, "<path> In check mode, save internal errors (including red herring) to a file");
   (* Misc *)
   ("-v"         , Arg.Unit (fun () -> incr Misc.verbosity_level), " Increase verbosity");
+  ("--print-derivation", Arg.String (push opt_print_derivations), "<sentence> Print the grammatical derivation of a sentence");
 ]
 
 let usage_msg = "Usage: ocamlgrammarfuzzer [options]"
@@ -511,6 +513,133 @@ let () =
   fixpoint ~counter ~propagate todo;
   Misc.stopwatch 1 "Stop BFS (depth: %d)" !counter
 
+(* Print requested derivations (if any) *)
+
+let interpreter =
+  let find_symbol =
+    let table = Hashtbl.create 7 in
+    Index.iter (Symbol.cardinal grammar) (fun t ->
+        Hashtbl.add table (Symbol.name grammar t) t;
+      );
+    fun name ->
+      match Hashtbl.find_opt table name with
+      | None ->
+        Printf.eprintf "Unknown symbol: %s\n" name;
+        exit 1
+      | Some t -> t
+  in
+  let get_action =
+    let table = Vector.make (Lr1.cardinal grammar) IndexMap.empty in
+    let index lr1 =
+      IndexMap.empty
+      |> IndexSet.fold (fun tr map ->
+          let target = Transition.target grammar tr in
+          let sym = Option.get (Lr1.incoming grammar target) in
+          IndexMap.add sym (`Shift target) map
+        ) (Transition.successors grammar lr1)
+      |> IndexSet.fold (fun red map ->
+          let action = `Reduce (Reduction.production grammar red) in
+          IndexSet.fold
+            (fun term map -> IndexMap.add (Symbol.inj_t grammar term) action map)
+            (Reduction.lookaheads grammar red)
+            map
+        ) (Reduction.from_lr1 grammar lr1)
+    in
+    let get_actions lr1 =
+      match table.:(lr1) with
+      | map when not (IndexMap.is_empty map) -> map
+      | _ ->
+        let map = index lr1 in
+        table.:(lr1) <- map;
+        map
+    in
+    fun lr1 sym ->
+      match IndexMap.find_opt sym (get_actions lr1) with
+      | None -> `Reject
+      | Some action -> action
+  in
+  let rec split_at n acc = function
+    | x :: xs when n > 0 -> split_at (n - 1) (x :: acc) xs
+    | xs -> (List.rev acc, xs)
+  in
+  let split_at n xs = split_at n [] xs in
+  let nodes_of_stack stack =
+    List.rev_map
+      (fun (lr1, child) ->
+         let label = match Lr1.incoming grammar lr1 with
+           | None ->
+             Nonterminal.to_string grammar
+               (Production.lhs grammar (Option.get (Lr1.is_entrypoint grammar lr1)))
+           | Some sym ->
+             Symbol.name grammar sym
+         in
+         Derivation_printer.node label child)
+      stack
+  in
+  let rec consume_symbol stack sym =
+    match stack with
+    | [] ->
+      prerr_endline "Empty stack";
+      None
+    | (top, _) :: _ ->
+      match get_action top sym with
+      | `Reject ->
+        Printf.eprintf "No action from state %s on symbol %s\n"
+          (Lr1.to_string grammar top) (Symbol.name grammar sym);
+        exit 1
+      | `Shift state ->
+        Some ((state, []) :: stack)
+      | `Reduce prod ->
+        let producers, stack = split_at (Production.length grammar prod) stack in
+        let nodes = nodes_of_stack producers in
+        let goto_sym = Symbol.inj_n grammar (Production.lhs grammar prod) in
+        match get_action (fst (List.hd stack)) goto_sym with
+        | `Reject | `Reduce _ -> failwith "Invalid automaton"
+        | `Shift state ->
+          consume_symbol ((state, nodes) :: stack) sym
+  in
+  fun entrypoint symbols ->
+    let stack = [entrypoint, []] in
+    let symbols = List.map find_symbol symbols in
+    let rec loop stack = function
+      | [] -> (stack, [])
+      | sym :: rest as input ->
+        match consume_symbol stack sym with
+        | None -> (stack, input)
+        | Some stack' -> loop stack' rest
+    in
+    let print_stack stack =
+      let nodes = nodes_of_stack stack in
+      Derivation_printer.output stdout nodes
+    in
+    let stack, remaining = loop stack symbols in
+    if List.is_empty remaining then
+      Printf.printf "Successful parse:\n"
+    else
+      Printf.printf "Input rejected after reaching:\n";
+    print_stack stack;
+    if not (List.is_empty remaining) then
+      Printf.printf "Remaining symbols: %s\n"
+        (string_concat_map ", " (Symbol.name grammar) remaining)
+
+let parse_sentence text =
+  let symbols = List.filter ((<>) "") (String.split_on_char ' ' text) in
+  let entrypoint, symbols =
+    match symbols with
+    | entrypoint :: rest when entrypoint.[String.length entrypoint - 1] = ':' ->
+      let entrypoint = String.sub entrypoint 0 (String.length entrypoint - 1) in
+      begin match Hashtbl.find_opt (Lr1.entrypoint_table grammar) entrypoint with
+      | None ->
+        Printf.eprintf "Unknown entrypoint: %s\n" entrypoint;
+        exit 1
+      | Some ep -> ep, rest
+      end
+    | symbols -> IndexSet.choose (Lr1.entrypoints grammar), symbols
+  in
+  interpreter entrypoint symbols
+
+let () = List.iter parse_sentence (List.rev !opt_print_derivations)
+
 (* Check we know how to print each terminal *)
 
 let terminal_text = Token_printer.for_grammar grammar !opt_terminals
@@ -534,7 +663,11 @@ let derivations =
   in
   match List.rev !opt_focus with
   | [] when not !opt_exhaust ->
-    Seq.init !opt_count (fun _ ->
+    let count = match !opt_count with
+      | 0 when List.is_empty !opt_print_derivations -> 1
+      | n -> n
+    in
+    Seq.init count (fun _ ->
         generate_sentence
           ~from:(sample_list entrypoints)
           ~length:!opt_length ()

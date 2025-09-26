@@ -194,7 +194,7 @@ let layout_lines nodes =
       in
       print_groups acc next
   in
-  print_groups [] [left, sized]
+  print_groups [] [left * 2, sized]
 
 let output oc nodes =
   List.iter
