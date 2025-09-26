@@ -568,8 +568,12 @@ let interpreter =
       (fun (lr1, child) ->
          let label = match Lr1.incoming grammar lr1 with
            | None ->
-             Nonterminal.to_string grammar
-               (Production.lhs grammar (Option.get (Lr1.is_entrypoint grammar lr1)))
+             let name =
+               Nonterminal.to_string grammar
+                 (Production.lhs grammar
+                    (Option.get (Lr1.is_entrypoint grammar lr1)))
+             in
+             String.sub name 0 (String.length name - 1) ^ ":"
            | Some sym ->
              Symbol.name grammar sym
          in

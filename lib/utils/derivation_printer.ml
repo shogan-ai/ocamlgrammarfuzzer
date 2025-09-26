@@ -62,8 +62,9 @@ let measure child =
           let row =
             match row with
             | None ->
-              let width = width_of leaves + Int.max 0 (List.length leaves - 1) in
-              {row' with nodes = row'.nodes @ pad_leaves leaves;
+              let leaves = pad_leaves leaves in
+              let width = width_of leaves in
+              {row' with nodes = row'.nodes @ leaves;
                          extra_right = Int.max 0 (row'.extra_right - width)}
             | Some row ->
               (join row' leaves row)
@@ -89,7 +90,7 @@ let measure child =
     (Int.max 0 (row.extra_left - leaves_width),
      leaves_width + width_of nodes,
      row.extra_right,
-     nodes)
+     leaves @ nodes)
 
 let node label child =
   let child_left, child_width, child_right, child = measure child in
@@ -194,7 +195,7 @@ let layout_lines nodes =
       in
       print_groups acc next
   in
-  print_groups [] [left * 2, sized]
+  print_groups [] [left, sized]
 
 let output oc nodes =
   List.iter
