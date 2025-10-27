@@ -9,6 +9,7 @@ let opt_length = ref 100
 let opt_comments = ref false
 let opt_seed = ref (-1)
 let opt_oxcaml = ref false
+let opt_lr1 = ref false
 let opt_entrypoints = ref []
 let opt_print_entrypoint = ref false
 let opt_weights = ref []
@@ -49,6 +50,7 @@ let spec_list = [
   ("--exhaust", Arg.Set opt_exhaust, " Exhaust mode generates a deterministic set of sentences that cover all reachable constructions");
   ("--ocamlformat", Arg.Set_string opt_ocamlformat, "<path> OCamlformat command to use");
   ("--oxcaml"   , Arg.Set opt_oxcaml, " Work with Oxcaml dialect");
+  ("--lr1"   , Arg.Set opt_lr1, " When using a builtin grammar (ocaml or --oxcaml), use LR(1) instead of LALR(1) automaton");
   ("--cmly", Arg.Set_string opt_cmly, "<path.cmly> Use grammar from the specified cmly file instead of builtin O(x)Caml grammar");
   (* Printer configuration *)
   ("--comments" , Arg.Set opt_comments , " Generate fake comments in the lines");
@@ -88,17 +90,19 @@ let () = match !opt_seed with
 module Grammar = MenhirSdk.Cmly_read.FromString(struct
     let content =
       if !opt_cmly <> "" then (
-        if !opt_oxcaml then
-          prerr_endline "--cmly: a grammar has been provided, ignoring --oxcaml";
+        if !opt_oxcaml || !opt_lr1 then
+          prerr_endline "--cmly: a grammar has been provided, ignoring --oxcaml / --lr1";
         let ic = open_in_bin !opt_cmly in
         let length = in_channel_length ic in
         let data = really_input_string ic length in
         close_in ic;
         data
-      ) else if !opt_oxcaml then
-        Oxcaml_grammar.content
-      else
-        Ocaml_grammar.content
+      ) else
+        match !opt_oxcaml, !opt_lr1 with
+        | true , false -> Oxcaml_grammar.lalr
+        | true , true  -> Oxcaml_grammar.lr1
+        | false, false -> Ocaml_grammar.lalr
+        | false, true  -> Ocaml_grammar.lr1
   end)
 
 include Info.Lift(Grammar)

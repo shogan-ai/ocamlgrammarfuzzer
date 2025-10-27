@@ -4,13 +4,25 @@
 
 (rule
   (targets oxcaml_grammar.ml)
-  (deps    parser_raw.cmly)
+  (deps    parser_raw_lr1.cmly parser_raw_lalr.cmly)
   (action
     (with-stdout-to %{targets}
-       (run %{exe:../embed/embed.exe} content=parser_raw.cmly))))
+       (run %{exe:../embed/embed.exe}
+         lalr=parser_raw_lalr.cmly
+         lr1=parser_raw_lr1.cmly))))
 
 (rule
-  (targets parser_raw.cmly parser_raw.ml parser_raw.mli)
+  (targets parser_raw_lr1.cmly parser_raw_lr1.ml parser_raw_lr1.mli)
   (deps parser_raw.mly)
   (action
-   (run menhir --table --cmly parser_raw.mly)))
+   (progn
+    (copy parser_raw.mly parser_raw_lr1.mly)
+    (run menhir --table --cmly parser_raw_lr1.mly))))
+
+(rule
+  (targets parser_raw_lalr.cmly parser_raw_lalr.ml parser_raw_lalr.mli)
+  (deps parser_raw.mly)
+  (action
+   (progn
+    (copy parser_raw.mly parser_raw_lalr.mly)
+    (run menhir --table --cmly --lalr parser_raw_lalr.mly))))
