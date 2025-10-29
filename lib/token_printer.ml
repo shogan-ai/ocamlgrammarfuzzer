@@ -48,7 +48,7 @@ let builtin = function
   | "IN"                     -> "in"
   | "INCLUDE"                -> "include"
   | "INFIXOP0"               -> "!="
-  | "INFIXOP1"               -> "@"
+  | "INFIXOP1"               -> "^"
   | "INFIXOP2"               -> "+!"
   | "INFIXOP3"               -> "land"
   | "INFIXOP4"               -> "**"
