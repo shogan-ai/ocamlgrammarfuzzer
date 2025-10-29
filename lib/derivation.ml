@@ -146,3 +146,19 @@ let items_of_expansion g ~expansion ~reduction =
   let {Reachability.production; _} = reduction in
   let _ , der = aux [] production 0 [] expansion in
   der
+
+open Utils
+
+let rec print acc g der =
+  match der.desc with
+  | Null -> Derivation_printer.node "~" [] :: acc
+  | Shift t -> Derivation_printer.node (Terminal.to_string g t) [] :: acc
+  | Node {left; right; _} ->
+    print (print acc g right) g left
+  | Expand {expansion; reduction} ->
+    let nodes = print [] g expansion in
+    let prod = reduction.Reachability.production in
+    let nt = Production.lhs g prod in
+    Derivation_printer.node (Nonterminal.to_string g nt) nodes :: acc
+
+let print g der = print [] g der

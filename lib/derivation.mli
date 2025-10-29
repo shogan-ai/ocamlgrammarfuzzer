@@ -56,3 +56,5 @@ type ('g, 'm, 'a) path =
 val map_path : ('a -> 'b) -> ('g, 'm, 'a) path -> ('g, 'm, 'b) path
 
 val unroll_path : ('g, 'r, 'm) t -> ('g, 'm, ('g, 'r, 'm) t) path -> ('g, 'r, 'm) t
+
+val print : 'g grammar -> ('g, 'r, 'm) t -> string Utils.Derivation_printer.node list
