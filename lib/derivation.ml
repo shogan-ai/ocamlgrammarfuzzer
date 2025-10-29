@@ -149,12 +149,16 @@ let items_of_expansion g ~expansion ~reduction =
 
 open Utils
 
+let tilde = Derivation_printer.node "~" []
+let lbra = Derivation_printer.node "[" [] 
+let rbra = Derivation_printer.node "]" [] 
+
 let rec print acc g der =
   match der.desc with
-  | Null -> Derivation_printer.node "~" [] :: acc
+  | Null -> tilde :: acc
   | Shift t -> Derivation_printer.node (Terminal.to_string g t) [] :: acc
   | Node {left; right; _} ->
-    print (print acc g right) g left
+    lbra :: print (print (rbra :: acc) g right) g left
   | Expand {expansion; reduction} ->
     let nodes = print [] g expansion in
     let prod = reduction.Reachability.production in
