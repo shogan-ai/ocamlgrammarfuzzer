@@ -425,41 +425,40 @@ let min_sentence =
         if cost = max_int then
           failwith "min_sentence: unreachable cell";
         let result =
-          if cost = 0 then
-            Derivation.null cell
-          else
-            let node, i_pre, i_post = Reach.Cell.decode cell in
-            try
-              match Reach.Tree.split node with
-              | R (l, r) ->
-                iter_sub_nodes i_pre i_post l r ~f:(fun cl ->
-                    let l_cost = Reach.Analysis.cost cl in
-                    fun cr ->
-                      let r_cost = Reach.Analysis.cost cr in
-                      if l_cost < max_int && r_cost < max_int &&
-                         l_cost + r_cost = cost then
-                        let der =
-                          Derivation.node cell (solve cl) (solve cr)
-                        in
-                        raise (Derivation_found der)
-                  );
-                assert false
-              | L tr ->
-                match Transition.split grammar tr with
-                | R shift ->
-                  assert (cost = 1);
-                  (* We reached a shift transition *)
-                  let terminal = Transition.shift_symbol grammar shift in
-                  Derivation.shift cell terminal
-                | L goto ->
-                  iter_eqns i_pre i_post goto ~f:begin fun reduction cell' ->
-                    if Reach.Analysis.cost cell' = cost then
-                      let expansion = solve cell' in
-                      let der = Derivation.expand cell expansion reduction in
+          let node, i_pre, i_post = Reach.Cell.decode cell in
+          try
+            begin match Reach.Tree.split node with
+            | R (l, r) ->
+              iter_sub_nodes i_pre i_post l r ~f:(fun cl ->
+                  let l_cost = Reach.Analysis.cost cl in
+                  fun cr ->
+                    let r_cost = Reach.Analysis.cost cr in
+                    if l_cost < max_int && r_cost < max_int &&
+                       l_cost + r_cost = cost then
+                      let der =
+                        Derivation.node cell (solve cl) (solve cr)
+                      in
                       raise (Derivation_found der)
-                  end;
-                  assert false
-            with Derivation_found der -> der
+                )
+            | L tr ->
+              match Transition.split grammar tr with
+              | R shift ->
+                assert (cost = 1);
+                (* We reached a shift transition *)
+                let terminal = Transition.shift_symbol grammar shift in
+                let der = Derivation.shift cell terminal in
+                raise (Derivation_found der)
+              | L goto ->
+                iter_eqns i_pre i_post goto ~f:begin fun reduction cell' ->
+                  if Reach.Analysis.cost cell' = cost then
+                    let expansion = solve cell' in
+                    let der = Derivation.expand cell expansion reduction in
+                    raise (Derivation_found der)
+                end
+            end;
+            assert (cost = 0);
+            Derivation.null cell
+          with Derivation_found der -> der
         in
         table.:(cell) <- result;
         assert (result.meta = cell);
