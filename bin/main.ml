@@ -776,7 +776,6 @@ let derivations =
         then min_sentence cell
         else fuzz length cell
       in
-      mark_derivation der;
       der
     in
     let enum = Index.enumerate Reach.Cell.n in
@@ -797,6 +796,7 @@ let derivations =
         let path = List.map (Derivation.map_path gen_path_component) bfs.:(cell) in
         let leaf = gen_cell !length cell in
         let der = List.fold_left Derivation.unroll_path leaf path in
+        mark_derivation der;
         Seq.Cons (der, next_cell)
     in
     next_cell
