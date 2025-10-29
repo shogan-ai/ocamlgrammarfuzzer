@@ -452,9 +452,9 @@ let min_sentence =
                   let terminal = Transition.shift_symbol grammar shift in
                   Derivation.shift cell terminal
                 | L goto ->
-                  iter_eqns i_pre i_post goto ~f:begin fun reduction cell ->
-                    if Reach.Analysis.cost cell = cost then
-                      let expansion = solve cell in
+                  iter_eqns i_pre i_post goto ~f:begin fun reduction cell' ->
+                    if Reach.Analysis.cost cell' = cost then
+                      let expansion = solve cell' in
                       let der = Derivation.expand cell expansion reduction in
                       raise (Derivation_found der)
                   end;
@@ -462,6 +462,7 @@ let min_sentence =
             with Derivation_found der -> der
         in
         table.:(cell) <- result;
+        assert (result.meta = cell);
         result
     in
     solve
