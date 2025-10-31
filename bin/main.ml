@@ -33,6 +33,8 @@ let opt_save_invariant_errors = ref ""
 let opt_save_internal_errors = ref ""
 let opt_save_comment_errors = ref ""
 
+let opt_track_regressions = ref ""
+
 let add_terminal str =
   match String.split_on_char '=' str with
   | [key; value] -> push opt_terminals (key, value)
@@ -69,6 +71,13 @@ let spec_list = [
   ("--save-invariant-errors-to" , Arg.Set_string opt_save_invariant_errors, "<path> In check mode, save invariant errors to a file");
   ("--save-comment-errors-to"   , Arg.Set_string opt_save_comment_errors, "<path> In check mode, save comment errors to a file");
   ("--save-internal-errors-to"  , Arg.Set_string opt_save_internal_errors, "<path> In check mode, save internal errors (including red herring) to a file");
+  (* CI test *)
+  ("--track-regressions-in"                 , Arg.Set_string opt_track_regressions,
+   "<path> In check mode, save success state in a file (in a custom text format). \
+    If the file already exists, it is read and results of the current run are compared. \
+    If a regression is detected, exit code is set to 1. \
+    Finally, the file is updated with the current state."
+  );
   (* Misc *)
   ("-v"         , Arg.Unit (fun () -> incr Misc.verbosity_level), " Increase verbosity");
   ("--print-derivation", Arg.String (push opt_print_derivations), "<sentence> Print the grammatical derivation of a sentence");
@@ -1441,6 +1450,115 @@ let red_herring_header oc =
      The location is guessed by inspecting the syntactic constructions that appear \
      most frequently in the failing code.\n\n"
 
+type stats = {
+  valid: int;
+  syntax_errors: int;
+  with_comments_dropped: int;
+  comments_dropped: int;
+  internal_errors: int;
+}
+
+let track_regressions path derivations outcome stats =
+  let result = ref true in
+  let header = "OCAMLGRAMMARFUZZER0" in
+  let trailer = "END" in
+  if Sys.file_exists path then (
+    let ic = open_in_bin path in
+    begin try
+        if input_line ic <> header then
+          failwith "invalid file format";
+        let count = int_of_string (input_line ic) in
+        if count <> Array.length outcome then
+          failwithf "different number of sentences (got:%d expected:%d)"
+            count (Array.length outcome);
+        let line = input_line ic in
+        Scanf.sscanf line
+          "valid:%d syntax_errors:%d with_comments_dropped:%d \
+           comments_dropped:%d internal_errors:%d"
+          (fun valid syntax_errors with_comments_dropped
+            comments_dropped internal_errors ->
+            let print name high_is_better before after =
+              match after - before with
+              | 0 -> ()
+              | delta ->
+                let improvement = if high_is_better then delta > 0 else delta < 0 in
+                Printf.printf "%s: %+d (%s)\n" name delta
+                  (if improvement then "improvement" else "REGRESSION")
+            in
+            print "valid" true
+              valid stats.valid;
+            print "syntax errors" false
+              syntax_errors stats.syntax_errors;
+            print "with comments dropped" false
+              with_comments_dropped stats.with_comments_dropped;
+            print "total comments dropped" false
+              comments_dropped stats.comments_dropped;
+            print "internal errors" false
+              internal_errors stats.internal_errors;
+          );
+        let current_line = ref 0 in
+        let reported = ref 0 in
+        let printer = Source_printer.make ~with_padding:false ~with_comments:!opt_comments () in
+        let check_successes limit =
+          while !current_line < limit do
+            let index = !current_line in
+            incr current_line;
+            let _, errors = outcome.(index) in
+            if not (List.is_empty errors) then (
+              result := false;
+              if !reported < !opt_max_errors_report then (
+                print_string "regression: ";
+                Derivation.iter_terminals derivations.(index)
+                  ~f:(Source_printer.add_terminal printer);
+                Source_printer.flush_only_source_to_channel printer stdout;
+                print_newline ();
+              ) else if !reported = !opt_max_errors_report then
+                print_endline "regression: ...";
+              incr reported
+            )
+          done
+        in
+        let failed line =
+          check_successes line;
+          incr current_line;
+          assert (!current_line = line + 1);
+        in
+        let rec loop () =
+          match input_line ic with
+          | line when line = trailer -> ()
+          | line ->
+            failed (int_of_string line);
+            loop ()
+        in
+        loop ();
+        check_successes (Array.length outcome)
+      with exn ->
+        result := false;
+        let msg = match exn with
+          | Failure str -> str
+          | End_of_file -> "unexpected end of file"
+          | exn -> "unhandled exception: " ^ Printexc.to_string exn
+        in
+        Printf.eprintf "Regressions: %s\n" msg;
+    end;
+    close_in_noerr ic
+  );
+  let oc = open_out_bin path in
+  let p fmt = Printf.fprintf oc fmt in
+  p "%s\n" header;
+  p "%d\n" (Array.length outcome);
+  p "valid:%d syntax_errors:%d with_comments_dropped:%d \
+     comments_dropped:%d internal_errors:%d\n"
+    stats.valid stats.syntax_errors stats.with_comments_dropped
+    stats.comments_dropped stats.internal_errors;
+  Array.iteri begin fun i (_, errors) ->
+    if not (List.is_empty errors) then
+      p "%d\n" i
+  end outcome;
+  p "%s\n" trailer;
+  close_out_noerr oc;
+  !result
+
 let check_mode () =
   let outputs = ref [] in
   let get_output = function
@@ -1515,6 +1633,13 @@ let check_mode () =
           incr internal_errors
       end errors
   end outcome;
+  let stats = {
+    valid                 = !valid;
+    syntax_errors         = !syntax_errors;
+    with_comments_dropped = !with_comments_dropped;
+    comments_dropped      = !comments_dropped;
+    internal_errors       = !internal_errors;
+  } in
   let count = Array.length outcome in
   let percent x = 100.0 *. float x /. float count in
   Printf.eprintf "Tested %d sentences:\n\
@@ -1523,10 +1648,10 @@ let check_mode () =
                   - %d had comments dropped (%.02f%%) (%d comments were dropped in total)\n\
                   - %d caused internal errors (%.02f%%)\n%!"
     count
-    !valid            (percent !valid)
-    !syntax_errors    (percent !syntax_errors)
-    !with_comments_dropped (percent !with_comments_dropped) !comments_dropped
-    !internal_errors  (percent !internal_errors);
+    stats.valid            (percent stats.valid)
+    stats.syntax_errors    (percent stats.syntax_errors)
+    stats.with_comments_dropped (percent stats.with_comments_dropped) stats.comments_dropped
+    stats.internal_errors  (percent stats.internal_errors);
   let output_sentences path pred =
     if path <> "" then
       let oc = get_output path in
@@ -1558,7 +1683,17 @@ let check_mode () =
     (fun errs -> has_kind Internal_error errs ||
                  has_kind Red_herring errs);
   output_sentences !opt_save_comment_errors (has_kind Comment);
-  close_outputs ()
+  (* Track regressions *)
+  let result =
+    !opt_track_regressions = "" ||
+    track_regressions !opt_track_regressions derivations outcome stats;
+  in
+  close_outputs ();
+  if result then
+    exit 0
+  else
+    exit 1
+
 
 let () =
   if !opt_ocamlformat_check then
