@@ -26,6 +26,52 @@ let input_line ?(debug=ignore) ic =
   debug result;
   result
 
+module Line_reader : sig
+  type t
+  val make : ?hook:(string -> unit) -> in_channel -> t
+  val peek : t -> string option
+  (* val pop : t -> string option pop*)
+  val next : t -> unit
+  val peek_exn : t -> string
+  val pop_exn : t -> string
+end = struct
+
+  type t = {
+    ic: in_channel;
+    hook: string -> unit;
+    mutable line: string option;
+  }
+
+  let next t =
+    let line = match input_line t.ic with
+      | exception End_of_file -> None
+      | text ->
+        t.hook text;
+        Some text
+    in
+    t.line <- line
+
+  let make ?(hook=ignore) ic =
+    let t = {ic; hook; line = None} in
+    next t;
+    t
+
+  let peek t = t.line
+
+  let pop t =
+    let result = t.line in
+    next t;
+    result
+
+  let get = function
+    | None -> raise End_of_file
+    | Some text -> text
+      
+  let peek_exn t = get t.line
+
+  let pop_exn t = get (pop t)
+end
+
 module Output_parser = struct
 
   (* Error message shape 1:
@@ -53,10 +99,11 @@ module Output_parser = struct
   (* Replace error messages mentioning a specific comment with a generic text *)
   let comment_dropped = "Error: comment dropped."
 
-  let error_message_1 text ic =
-    Scanf.sscanf_opt text
+  let error_message_1 lr =
+    Scanf.sscanf_opt (Line_reader.peek_exn lr)
       {|File %S, line %d, characters %d-%d:|}
       (fun input line start_col end_col ->
+         Line_reader.next lr;
          let match_terminator text =
            match Scanf.sscanf_opt text "%d | %s" (fun _ _ -> ()) with
            | Some _ -> None
@@ -65,14 +112,21 @@ module Output_parser = struct
              match Scanf.sscanf_opt text "Error: comment (*  C%d  *) dropped." (fun _ -> ()) with
              | Some () -> Some (Some (input, error ~location comment_dropped))
              | None ->
-               if String.starts_with ~prefix:"Error: " text then
-                 Some (Some (input, error ~location text))
-               else if String.starts_with ~prefix:"  This "  text then
+               if String.starts_with ~prefix:"Error: " text then (
+                 let rec pump acc =
+                   match Line_reader.peek lr with
+                   | Some next when StringLabels.starts_with ~prefix:"  " next ->
+                     Line_reader.next lr;
+                     pump (next :: acc)
+                   | _ -> String.concat "\n" (List.rev acc)
+                 in
+                 Some (Some (input, error ~location (pump [text])))
+               ) else if String.starts_with ~prefix:"  This "  text then
                  Some None
                else
                  failwithf "Unexpected line %S" text
          in
-         match match_terminator (ic ()) with
+         match match_terminator (Line_reader.pop_exn lr) with
          | Some result -> result
          | _ ->
            let caret = ref false in
@@ -81,10 +135,10 @@ module Output_parser = struct
              | '^' -> caret := true; true
              | _ -> false
            in
-           while not (String.for_all pred (ic ())) do
+           while not (String.for_all pred (Line_reader.pop_exn lr)) do
              caret := false
            done;
-           let text = ic () in
+           let text = Line_reader.pop_exn lr in
            match match_terminator text with
            | None -> failwithf "Unexpected line %S (looking for error terminator)" text
            | Some result -> result
@@ -95,8 +149,8 @@ module Output_parser = struct
      ocamlformat: ignoring "%s" (syntax error)
   *)
 
-  let error_message_2 text =
-    Scanf.sscanf_opt text
+  let error_message_2 lr =
+    Scanf.sscanf_opt (Line_reader.peek_exn lr)
       {|%s@: ignoring %S (syntax error)|}
       (fun _ocamlformat path -> path)
 
@@ -110,59 +164,67 @@ module Output_parser = struct
      where bug apply
   *)
 
-  let error_message_3_part_1 text ic =
-    Scanf.sscanf_opt text
+  let error_message_3_part_1 lr =
+    Scanf.sscanf_opt (Line_reader.peek_exn lr)
       {|%s@: Cannot process %S.|}
       (fun _ocamlformat input ->
-         match ic () with
+         Line_reader.next lr;
+         match Line_reader.pop_exn lr with
          | "  Please report this bug at https://github.com/ocaml-ppx/ocamlformat/issues." ->
            input
-         | line -> failwithf "driver: %s: unexpected error header: %s" input line
+         | line -> failwithf "driver: %s: unexpected error header: %S" input line
       )
 
-  let error_message_3_part_2 text ic =
-    if text = "  BUG: unhandled exception." then
-      Some (error ("Exception: " ^ ic ()))
-    else if String.starts_with ~prefix:"  BUG: " text then
+  let error_message_3_part_2 lr =
+    let text = Line_reader.peek_exn lr in
+    if text = "  BUG: unhandled exception." then (
+      Line_reader.next lr;
+      Some (error ("Exception: " ^ Line_reader.pop_exn lr))
+    ) else if String.starts_with ~prefix:"  BUG: " text then (
+      Line_reader.next lr;
       Some (error (String.trim text))
-    else
+    ) else
       None
 
-  let rec next_error buggy_input ic =
-    match ic () with
-    | exception End_of_file -> None
-    | "" -> next_error buggy_input ic
-    | line ->
+  let rec next_error buggy_input lr =
+    match Line_reader.peek lr with
+    | None -> None
+    | Some "" ->
+      Line_reader.next lr;
+      next_error buggy_input lr
+    | Some line ->
       let next =
         try
-          match error_message_1 line ic with
+          match error_message_1 lr with
           | Some r -> r
           | None ->
-            match error_message_3_part_1 line ic with
+            match error_message_3_part_1 lr with
             | Some input ->
               buggy_input := input;
               None
             | None ->
-              match error_message_3_part_2 line ic with
+              match error_message_3_part_2 lr with
               | Some err -> Some (!buggy_input, err)
               | None ->
-                match error_message_2 line with
+                match error_message_2 lr with
                 | Some _path ->
                   (* This message is just noise preceeding a real syntax error message *)
+                  Line_reader.next lr;
                   None
                 | None ->
-                  failwithf "driver: error: unexpected output: %s" line
+                  failwithf "driver: error: unexpected output: %S" line
         with End_of_file ->
-          failwithf "driver: error: unexpected end of file after line: %s" line
+          failwithf "driver: error: unexpected end of file after line: %S" line
       in
       match next with
       | Some _ as r -> r
-      | None -> next_error buggy_input ic
+      | None ->
+        next_error buggy_input lr
 
-  let read_errors ic =
+  let read_errors lr =
     let buggy_input = ref "" in
     let rec loop acc =
-      match next_error buggy_input ic with
+      match next_error buggy_input lr with
       | None -> List.rev acc
       | Some x -> loop (x :: acc)
     in
@@ -241,7 +303,7 @@ let unlink_no_err path =
 let consume_batch ?debug_line ~consume ~pack = function
   | None -> Seq.empty
   | Some (files, (_, _, pstderr as process)) ->
-    let line_reader () = input_line ?debug:debug_line pstderr in
+    let line_reader = Line_reader.make ?hook:debug_line pstderr in
     let errors = Output_parser.read_errors line_reader in
     ignore (Unix.close_process_full process);
     let files = Array.of_list (List.map consume files) in
