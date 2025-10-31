@@ -6,6 +6,7 @@ let opt_quiet = ref false
 let opt_summary = ref false
 let opt_success = ref false
 let opt_raw_output = ref false
+let opt_debug_idempotence = ref false
 let opt_jobs = ref 8
 let opt_batch_size = ref 400
 
@@ -19,14 +20,24 @@ let set_input arg =
                       "Unexpected argument %S (input already set to %S)" arg !input))
 
 let spec_list = [
-  ("--ocamlformat", Arg.Set_string opt_ocamlformat, "<path> OCamlformat command to use");
-  ("--silence-errors", Arg.Set opt_quiet, " Do not print errors");
-  ("--print-success", Arg.Set opt_success, " Print line numbers that were successfully parsed");
-  ("--jobs", Arg.Set_int opt_jobs, "<int> Number of ocamlformat processes to run in parallel (default: 8)");
-  ("--batch-size", Arg.Set_int opt_batch_size, "<int> Number of files to submit to each ocamlformat process (default: 400)");
-  ("--summary", Arg.Set opt_summary, " Output a summary at the end");
-  ("--raw-output", Arg.Set opt_raw_output, " Output raw messages from ocamlformat on stderr");
-  ("-", Arg.Unit (fun () -> set_input "-"), " Read from standard input");
+  ("--ocamlformat", Arg.Set_string opt_ocamlformat,
+   "<path> OCamlformat command to use");
+  ("--silence-errors", Arg.Set opt_quiet,
+   " Do not print errors");
+  ("--print-success", Arg.Set opt_success,
+   " Print line numbers that were successfully parsed");
+  ("--jobs", Arg.Set_int opt_jobs,
+   "<int> Number of ocamlformat processes to run in parallel (default: 8)");
+  ("--batch-size", Arg.Set_int opt_batch_size,
+   "<int> Number of files to submit to each ocamlformat process (default: 400)");
+  ("--summary", Arg.Set opt_summary,
+   " Output a summary at the end");
+  ("--raw-output", Arg.Set opt_raw_output,
+   " Output raw messages from ocamlformat on stderr");
+  ("--debug-idempotence", Arg.Set opt_debug_idempotence,
+   " Check that (batch) formatting is idempotent");
+  ("-", Arg.Unit (fun () -> set_input "-"),
+   " Read from standard input");
 ]
 
 let usage_msg =
@@ -64,14 +75,42 @@ let error_count = ref 0
 
 let ic = if !input = "-" then stdin else open_in_bin !input
 
+let get_errors seq =
+  let ocamlformat_command = !opt_ocamlformat in
+  let jobs = Int.max 0 !opt_jobs in
+  let batch_size = Int.max 1 !opt_batch_size in
+  let debug_line = if !opt_raw_output then prerr_endline else ignore in
+  if not !opt_debug_idempotence then
+    Ocamlformat.check seq ~ocamlformat_command ~jobs ~batch_size ~debug_line
+  else
+    let duplicates = 3 in
+    let rec extract acc seq = function
+      | 0 -> (List.rev acc, seq)
+      | n ->
+        match seq () with
+        | Seq.Nil -> (List.rev acc, seq)
+        | Seq.Cons (x, seq') ->
+          extract (x :: acc) seq' (n - 1)
+    in
+    let rec consume seq () =
+      match extract [] seq duplicates with
+      | [], seq -> assert (Seq.is_empty seq); Seq.Nil
+      | (formatted, errors) :: xs, seq ->
+        List.iter (fun (f', e') ->
+            assert (f' = formatted);
+            assert (e' = errors)
+          ) xs;
+        Seq.Cons (errors, consume seq)
+    in
+    seq
+    |> Seq.concat_map (fun i -> Seq.take duplicates (Seq.repeat i))
+    |> Ocamlformat.format ~ocamlformat_command ~jobs ~batch_size ~debug_line
+    |> consume
+  
 let () =
   read_lines ic
   |> Seq.map infer_kind
-  |> Ocamlformat.check
-    ~ocamlformat_command:!opt_ocamlformat
-    ~jobs:(Int.max 0 !opt_jobs)
-    ~batch_size:(Int.max 1 !opt_batch_size)
-    ~debug_line:(if !opt_raw_output then prerr_endline else ignore)
+  |> get_errors
   |> Seq.iteri begin fun i errors ->
     if not !opt_quiet then
       List.iter begin fun error ->
