@@ -75,6 +75,27 @@ let error_count = ref 0
 
 let ic = if !input = "-" then stdin else open_in_bin !input
 
+let shuffle arr =
+  let n = Array.length arr in
+  for i = n - 1 downto 1 do
+    let j = Random.full_int i in
+    let arr_i = arr.(i) and arr_j = arr.(j) in
+    arr.(j) <- arr_i;
+    arr.(i) <- arr_j;
+  done
+
+let extract n seq =
+  let seq = ref seq in
+  let arr =
+    Array.init n @@ fun _ ->
+    match !seq () with
+    | Seq.Nil -> failwith "extract: Unexpected end of sequence"
+    | Seq.Cons (x, seq') ->
+      seq := seq';
+      x
+  in
+  (arr, !seq)
+  
 let get_errors seq =
   let ocamlformat_command = !opt_ocamlformat in
   let jobs = Int.max 0 !opt_jobs in
@@ -84,29 +105,36 @@ let get_errors seq =
     Ocamlformat.check seq ~ocamlformat_command ~jobs ~batch_size ~debug_line
   else
     let duplicates = 3 in
-    let rec extract acc seq = function
-      | 0 -> (List.rev acc, seq)
-      | n ->
-        match seq () with
-        | Seq.Nil -> (List.rev acc, seq)
-        | Seq.Cons (x, seq') ->
-          extract (x :: acc) seq' (n - 1)
+    let arr0 = Array.of_seq (Seq.mapi (fun i x -> (i, x)) seq) in
+    let n = Array.length arr0 in
+    let arr = Array.concat (List.init duplicates (fun i ->
+        if i = 0 then arr0 else
+          let arr = Array.copy arr0 in
+          shuffle arr;
+          arr
+      ))
     in
-    let rec consume seq () =
-      match extract [] seq duplicates with
-      | [], seq -> assert (Seq.is_empty seq); Seq.Nil
-      | (formatted, errors) :: xs, seq ->
-        List.iter (fun (f', e') ->
-            assert (f' = formatted);
-            assert (e' = errors)
-          ) xs;
-        Seq.Cons (errors, consume seq)
+    let inputs = Array.to_seq arr in
+    let results = 
+      Ocamlformat.format ~ocamlformat_command ~jobs ~batch_size ~debug_line
+        (Seq.map snd inputs)
     in
-    seq
-    |> Seq.concat_map (fun i -> Seq.take duplicates (Seq.repeat i))
-    |> Ocamlformat.format ~ocamlformat_command ~jobs ~batch_size ~debug_line
-    |> consume
+    let reference, results = extract n results in 
+    let inputs = Seq.drop n inputs in
+    Seq.iter2 begin fun (i, (_, input)) (formatted, errors) ->
+      let formatted', errors' = reference.(i) in
+      if formatted <> formatted' && errors <> errors' then (
+        Printf.eprintf "Unstable formatting:\n  input: %S\n  reference:%S\n  other:%S\n"
+          input formatted' formatted
+      )
+    end inputs results;
+    (* Drop formatting *)
+    Seq.map snd (Array.to_seq reference)
   
+let () =
+  if !opt_debug_idempotence then
+    Random.self_init ()
+
 let () =
   read_lines ic
   |> Seq.map infer_kind
