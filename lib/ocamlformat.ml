@@ -188,8 +188,6 @@ module Output_parser = struct
     loop [] answers
 end
 
-let check_command = ["--check"; "--enable-outside-detected-project"]
-
 let default_batch_size = 80
 
 let temp_dir = Filename.get_temp_dir_name ()
@@ -209,7 +207,7 @@ type source_kind =
   | Impl
   | Intf
 
-let start_batch ?debug_line ~ocamlformat_command = function
+let start_batch ?debug_line ~ocamlformat_command ~args = function
   | [] -> None
   | inputs ->
     let id = !batch_ids in
@@ -231,29 +229,31 @@ let start_batch ?debug_line ~ocamlformat_command = function
     let process =
       Unix.open_process_args_full
         ocamlformat_command
-        (Array.of_list (ocamlformat_command :: check_command @ files))
+        (Array.of_list (ocamlformat_command :: args @ files))
         (Lazy.force environ)
     in
     Some (files, process)
 
-let consume_batch ?debug_line = function
+let unlink_no_err path =
+  try Unix.unlink path
+  with _ -> ()
+
+let consume_batch ?debug_line ~consume ~pack = function
   | None -> Seq.empty
   | Some (files, (_, _, pstderr as process)) ->
-    let errors =
-      let line () = input_line ?debug:debug_line pstderr in
-      let r = Output_parser.read_errors line in
-      List.iter (fun x -> try Unix.unlink x with _ -> ()) files;
-      ignore (Unix.close_process_full process);
-      Output_parser.rev_cleanup_errors r
-    in
-    let answer = Array.make (List.length files) [] in
+    let line_reader () = input_line ?debug:debug_line pstderr in
+    let errors = Output_parser.read_errors line_reader in
+    ignore (Unix.close_process_full process);
+    let files = Array.of_list (List.map consume files) in
+    let errors = Output_parser.rev_cleanup_errors errors in
+    let answer = Array.make (Array.length files) [] in
     List.iter begin fun (input, error) ->
       match temp_path_index input with
       | Some index -> answer.(index) <- error :: answer.(index)
       | None -> failwithf "driver: error: unexpected filename %S, \
                            expecting ocamlgrammarfuzzer_%%06d.{ml,mli}" input
     end errors;
-    Array.to_seq answer
+    Array.to_seq (Array.map2 pack files answer)
 
 type 'a pure_queue = {
   head: 'a list;
@@ -302,8 +302,38 @@ let check
   |> (* Group by batches of appropriate size *)
   batch_by ~size:batch_size
   |> (* Launch a process for each batch *)
-  Seq.map (start_batch ?debug_line ~ocamlformat_command)
+  Seq.map (start_batch ?debug_line ~ocamlformat_command
+             ~args:["--check"; "--enable-outside-detected-project"])
   |> (* Force sequence enough items ahead to kick [jobs] processes ahead *)
   overlapping_force jobs
   |> (* Collect the results *)
-  Seq.concat_map (consume_batch ?debug_line)
+  Seq.concat_map (consume_batch ?debug_line
+                    ~consume:unlink_no_err
+                    ~pack:(fun () errors -> errors))
+
+let format
+    ?(ocamlformat_command="ocamlformat")
+    ?(jobs=0) ?(batch_size=default_batch_size)
+    ?debug_line
+    seq
+  =
+  let read_and_unlink path =
+    let ic = open_in_bin path in
+    let length = in_channel_length ic in
+    let contents = really_input_string ic length in
+    close_in_noerr ic;
+    unlink_no_err path;
+    contents
+  in
+  seq
+  |> (* Group by batches of appropriate size *)
+  batch_by ~size:batch_size
+  |> (* Launch a process for each batch *)
+  Seq.map (start_batch ?debug_line ~ocamlformat_command
+             ~args:["--inplace"; "--enable-outside-detected-project"])
+  |> (* Force sequence enough items ahead to kick [jobs] processes ahead *)
+  overlapping_force jobs
+  |> (* Collect the results *)
+  Seq.concat_map (consume_batch ?debug_line
+                    ~consume:read_and_unlink
+                    ~pack:(fun contents errors -> (contents, errors)))
