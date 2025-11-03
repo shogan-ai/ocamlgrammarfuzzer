@@ -1,10 +1,11 @@
 (executable
- (public_name grammarfuzzer)
+ (public_name ocamlgrammarfuzzer)
  (name main)
  (modules main)
  (libraries grammarfuzzer menhirSdk front ocaml_grammar oxcaml_grammar))
 
 (executable
+ (public_name ocamlgrammarfuzzer-minidriver)
  (name mini_driver)
  (modules mini_driver)
  (libraries grammarfuzzer unix))

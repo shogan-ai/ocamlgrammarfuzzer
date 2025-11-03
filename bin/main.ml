@@ -577,11 +577,13 @@ let rec fuzz size0 cell =
 
 let () = Misc.stopwatch 1 "Start BFS"
 
+let plural = function
+  | [] | [_] -> ""
+  | _ -> "s"
+
 let entrypoints =
-  let accepting = Transition.accepting grammar in
-  match !opt_entrypoints with
-  | [] -> accepting
-  | entrypoints ->
+  let find_entrypoints entrypoints =
+    let accepting = Transition.accepting grammar in
     let table = Hashtbl.create 7 in
     List.iter (fun name -> Hashtbl.replace table name ()) entrypoints;
     let entries =
@@ -621,9 +623,16 @@ let entrypoints =
       Syntax.error Lexing.dummy_pos
         "unknown entrypoint%s %s.\n\
          valid entrypoints are:\n  %s."
-        (if List.compare_length_with keys 1 > 0 then "s" else "")
+        (plural keys)
         (String.concat ", " entrypoints)
         (string_concat_map ", " snd candidates)
+  in
+  let entrypoints =
+    match !opt_entrypoints with
+    | [] -> ["implementation"; "interface"]
+    | xs -> xs
+  in
+  find_entrypoints entrypoints
 
 let bfs = Vector.make Reach.Cell.n []
 
@@ -1096,10 +1105,6 @@ type error = {
   kind: error_kind;
   position: int option;
 }
-
-let plural = function
-  | [] | [_] -> ""
-  | _ -> "s"
 
 let report_error_samples oc ~with_comment errors =
   let exception Exit_iter in
