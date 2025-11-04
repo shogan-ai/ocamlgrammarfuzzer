@@ -42,7 +42,8 @@ let opt_save_invariant_errors = ref ""
 let opt_save_internal_errors = ref ""
 let opt_save_comment_errors = ref ""
 
-let opt_track_regressions = ref ""
+let opt_track_regressions_from = ref ""
+let opt_track_regressions_to = ref ""
 let opt_debug_log_output = ref false
 
 let add_terminal str =
@@ -82,11 +83,14 @@ let spec_list = [
   ("--save-comment-errors-to"   , Arg.Set_string opt_save_comment_errors, "<path> In check mode, save comment errors to a file");
   ("--save-internal-errors-to"  , Arg.Set_string opt_save_internal_errors, "<path> In check mode, save internal errors (including red herring) to a file");
   (* CI test *)
-  ("--track-regressions-in"                 , Arg.Set_string opt_track_regressions,
-   "<path> In check mode, save success state in a file (in a custom text format). \
-    If the file already exists, it is read and results of the current run are compared. \
-    If a regression is detected, exit code is set to 1. \
-    Finally, the file is updated with the current state."
+  ("--track-regressions-from"   , Arg.Set_string opt_track_regressions_from,
+   "<path> In check mode, read success state from a previous run and compare them to current results. \
+    If a regression is detected, exit code is set to 1."
+  );
+  ("--track-regressions-to"     , Arg.Set_string opt_track_regressions_to,
+   "<path> In check mode, save success state in a file (in a custom text format).");
+  ("--track-regressions-in"     , Arg.String (fun x -> opt_track_regressions_from := x; opt_track_regressions_to := x),
+   "<path> --track-regressions-in x is --track-regressions-from x --track-regressions-to x"
   );
   (* Misc *)
   ("-v"         , Arg.Unit (fun () -> incr Misc.verbosity_level), " Increase verbosity");
@@ -1479,109 +1483,114 @@ type stats = {
   internal_errors: int;
 }
 
-let track_regressions path derivations outcome stats =
+let track_regressions path_from path_to derivations outcome stats =
   let result = ref true in
   let header = "OCAMLGRAMMARFUZZER0" in
   let hash = Digest.to_hex (Digest.string cmly_content) in
   let trailer = "END" in
-  if Sys.file_exists path then (
-    let ic = open_in_bin path in
-    begin try
-        if input_line ic <> header then
-          failwith "invalid file format";
-        let hash' = input_line ic in
-        if hash <> hash' then
-          failwithf "different grammar (hash: %s, expected: %s)"
-            hash' hash;
-        let count = int_of_string (input_line ic) in
-        if count <> Array.length outcome then
-          failwithf "different number of sentences (got: %d, expected: %d)"
-            count (Array.length outcome);
-        let line = input_line ic in
-        Scanf.sscanf line
-          "valid:%d syntax_errors:%d with_comments_dropped:%d \
-           comments_dropped:%d internal_errors:%d"
-          (fun valid syntax_errors with_comments_dropped
-            comments_dropped internal_errors ->
-            let print name high_is_better before after =
-              match after - before with
-              | 0 -> ()
-              | delta ->
-                let improvement = if high_is_better then delta > 0 else delta < 0 in
-                Printf.printf "%s: %+d (%s)\n" name delta
-                  (if improvement then "improvement" else "REGRESSION")
-            in
-            print "valid" true
-              valid stats.valid;
-            print "syntax errors" false
-              syntax_errors stats.syntax_errors;
-            print "with comments dropped" false
-              with_comments_dropped stats.with_comments_dropped;
-            print "total comments dropped" false
-              comments_dropped stats.comments_dropped;
-            print "internal errors" false
-              internal_errors stats.internal_errors;
-          );
-        let current_line = ref 0 in
-        let reported = ref 0 in
-        let printer = Source_printer.make ~with_padding:false ~with_comments:!opt_comments () in
-        let check_successes limit =
-          while !current_line < limit do
-            let index = !current_line in
+  if path_from <> "" then (
+    if Sys.file_exists path_from then (
+      let ic = open_in_bin path_from in
+      begin try
+          if input_line ic <> header then
+            failwith "invalid file format";
+          let hash' = input_line ic in
+          if hash <> hash' then
+            failwithf "different grammar (hash: %s, expected: %s)"
+              hash' hash;
+          let count = int_of_string (input_line ic) in
+          if count <> Array.length outcome then
+            failwithf "different number of sentences (got: %d, expected: %d)"
+              count (Array.length outcome);
+          let line = input_line ic in
+          Scanf.sscanf line
+            "valid:%d syntax_errors:%d with_comments_dropped:%d \
+             comments_dropped:%d internal_errors:%d"
+            (fun valid syntax_errors with_comments_dropped
+                 comments_dropped internal_errors ->
+              let print name high_is_better before after =
+                match after - before with
+                | 0 -> ()
+                | delta ->
+                   let improvement = if high_is_better then delta > 0 else delta < 0 in
+                   Printf.printf "%s: %+d (%s)\n" name delta
+                     (if improvement then "improvement" else "REGRESSION")
+              in
+              print "valid" true
+                valid stats.valid;
+              print "syntax errors" false
+                syntax_errors stats.syntax_errors;
+              print "with comments dropped" false
+                with_comments_dropped stats.with_comments_dropped;
+              print "total comments dropped" false
+                comments_dropped stats.comments_dropped;
+              print "internal errors" false
+                internal_errors stats.internal_errors;
+            );
+          let current_line = ref 0 in
+          let reported = ref 0 in
+          let printer = Source_printer.make ~with_padding:false ~with_comments:!opt_comments () in
+          let check_successes limit =
+            while !current_line < limit do
+              let index = !current_line in
+              incr current_line;
+              let _, errors = outcome.(index) in
+              if not (List.is_empty errors) then (
+                result := false;
+                if !reported < !opt_max_errors_report then (
+                  print_string "regression: ";
+                  Derivation.iter_terminals derivations.(index)
+                    ~f:(Source_printer.add_terminal printer);
+                  Source_printer.flush_only_source_to_channel printer stdout;
+                  print_newline ();
+                ) else if !reported = !opt_max_errors_report then
+                  print_endline "regression: ...";
+                incr reported
+              )
+            done
+          in
+          let failed line =
+            check_successes line;
             incr current_line;
-            let _, errors = outcome.(index) in
-            if not (List.is_empty errors) then (
-              result := false;
-              if !reported < !opt_max_errors_report then (
-                print_string "regression: ";
-                Derivation.iter_terminals derivations.(index)
-                  ~f:(Source_printer.add_terminal printer);
-                Source_printer.flush_only_source_to_channel printer stdout;
-                print_newline ();
-              ) else if !reported = !opt_max_errors_report then
-                print_endline "regression: ...";
-              incr reported
-            )
-          done
-        in
-        let failed line =
-          check_successes line;
-          incr current_line;
-          assert (!current_line = line + 1);
-        in
-        let rec loop () =
-          match input_line ic with
-          | line when line = trailer -> ()
-          | line ->
-            failed (int_of_string line);
-            loop ()
-        in
-        loop ();
-        check_successes (Array.length outcome)
-      with exn ->
-        result := false;
-        let msg = match exn with
-          | Failure str -> str
-          | End_of_file -> "unexpected end of file"
-          | exn -> "unhandled exception: " ^ Printexc.to_string exn
-        in
-        Printf.eprintf "Regressions: %s\n" msg;
-    end;
-    close_in_noerr ic
+            assert (!current_line = line + 1);
+          in
+          let rec loop () =
+            match input_line ic with
+            | line when line = trailer -> ()
+            | line ->
+               failed (int_of_string line);
+               loop ()
+          in
+          loop ();
+          check_successes (Array.length outcome)
+        with exn ->
+          result := false;
+          let msg = match exn with
+            | Failure str -> str
+            | End_of_file -> "unexpected end of file"
+            | exn -> "unhandled exception: " ^ Printexc.to_string exn
+          in
+          Printf.eprintf "Regressions: %s\n" msg;
+      end;
+      close_in_noerr ic
+    ) else
+      result := false;
   );
-  let oc = open_out_bin path in
-  let p fmt = Printf.fprintf oc fmt in
-  p "%s\n%s\n%d\n" header hash (Array.length outcome);
-  p "valid:%d syntax_errors:%d with_comments_dropped:%d \
-     comments_dropped:%d internal_errors:%d\n"
-    stats.valid stats.syntax_errors stats.with_comments_dropped
-    stats.comments_dropped stats.internal_errors;
-  Array.iteri begin fun i (_, errors) ->
-    if not (List.is_empty errors) then
-      p "%d\n" i
-  end outcome;
-  p "%s\n" trailer;
-  close_out_noerr oc;
+  if path_to <> "" then (
+    let oc = open_out_bin path_to in
+    let p fmt = Printf.fprintf oc fmt in
+    p "%s\n%s\n%d\n" header hash (Array.length outcome);
+    p "valid:%d syntax_errors:%d with_comments_dropped:%d \
+       comments_dropped:%d internal_errors:%d\n"
+      stats.valid stats.syntax_errors stats.with_comments_dropped
+      stats.comments_dropped stats.internal_errors;
+    Array.iteri begin fun i (_, errors) ->
+      if not (List.is_empty errors) then
+        p "%d\n" i
+      end outcome;
+    p "%s\n" trailer;
+    close_out_noerr oc;
+  );
   !result
 
 let check_mode () =
@@ -1713,8 +1722,9 @@ let check_mode () =
   output_sentences !opt_save_comment_errors (has_kind Comment);
   (* Track regressions *)
   let result =
-    !opt_track_regressions = "" ||
-    track_regressions !opt_track_regressions derivations outcome stats;
+    track_regressions
+      !opt_track_regressions_from !opt_track_regressions_to
+      derivations outcome stats;
   in
   close_outputs ();
   if result then
