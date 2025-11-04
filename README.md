@@ -282,17 +282,110 @@ The pattern can be:
 
 ## Error classification
 
-TODO.
+When reporting **ocamlformat** failures, the fuzzer classifies errors into up to six categories:
+
+1. **Parser**  
+2. **Lexer**
+3. **Comment** 
+4. **Invariant** 
+5. **Internal** 
+6. **Red herrings**
+
+Because the fuzzer only has access to the output of **ocamlformat** and not to its internal state, the classification relies on heuristics that parse the output, mostly using the reported locations:
+
+- **Lexer:** The rejection occurs in the middle of a token (**ocamlformat** recognized the token differently from the
+  fuzzer expectation).
+- **Parser:** A specific token causes the sentence to be rejected. (the token was recognized then rejected, but the fuzzer expects it to be correct).
+- **Comment:** The error location points inside a comment; this is usually a comment that was dropped by formatting.
+- **Invariant:** The error spans more than one token, typically produced by a semantic action in a production.
+- **Internal:** **ocamlformat** was not able to produce a location.
+- **Red herrings:** **ocamlformat** reported a non-sensical
+  location. Matching the location to source code would be a dead end.
+
+On top of this coarse-grained classification, the fuzzer groups errors by the grammatical construction surrounding the error location (represented by a grammatical item) and by the excerpt of the grammatical derivation that justifies the sentence’s validity.
+
+### Sample report – parser error
+
+**Item `seq_expr: . fun_seq_expr`** (in 2932 errors)
+
+Derivation (182 occurrences):
+  ```
+  fun_expr: OVERWRITE ext list(attribute) . seq_expr WITH fun_expr
+    seq_expr: . fun_seq_expr
+      fun_seq_expr: . fun_expr
+        fun_expr: . fun_
+          fun_: . FUN ext list(attribute) fun_params optional_atomic_constraint_ MINUSGREATER fun_body
+  ```
+
+Sample sentence (implementation):
+  ```ocaml
+  overwrite_ fun false -> X with X
+             ^^^
+  ```
+
+From this we learn that a `seq_expr` beginning with `FUN` is often rejected by **ocamlformat**, even though the grammar permits such a construction (via a few expansions: `seq_expr` -> `fun_seq_expr` -> `fun_expr` -> `fun_`). In this case it occurred after the `OVERWRITE` token, but a full report would contain other examples.
+
+#### About invariant errors
+
+Because the fuzzer is guided solely by the grammar, it can report errors for sentences that are syntactically valid but are rejected for semantic reasons.
+
+Example:
+`let x : type x . {%ext|s|} as 'x = X`
+rejected with
+`In this scoped type, variable 'x is reserved for the local type x.`
+
+These errors may or may not be worth fixing in **ocamlformat**. Heuristics typically classify them as invariant errors to reduce noise in the report.
 
 ---  
 
 ## Continuous integration
 
+The `--track-regressions-in` argument is designed to help fuzzing in a CI job. It uses a file, say `fuzzer_state.dat`, to remember the sentences that are known to fail and to detect regressions accross multiple runs.
+
+In the CI workflow, running the fuzzer with this flag and reporing a non-zero exit code is sufficient to detect regressions:
+
+The developer can then find some sample sentences that were previously accepted and are now failing in the output log.
+They can either fix the problem or commit the new `fuzzer_state.dat` to silence these issues in the future. 
+
+Sample use:
+
+Running the fuzzer:
+``` bash
+ocamlgrammarfuzzer --ocamlformat-check --oxcaml --exhaust --comments --ocamlformat _build/default/bin/ocamlformat/main.exe --track-regressions-in fuzzer_state.dat
+```
+
+Use the new state for future reference:
+``` bash
+git add fuzzer_state.dat
+# and/or dune promote if applicable
+```
+
+Updating the state can be done both to ignore some regressions that were reported, or, when more sentences succeed, to make future tests stricter.
+
+TODO: if there are no regressions, the CI will pass; however it is still important to commmit the new `fuzzer_state.dat` to prevent future regressions. 
+TODO: add a flag to write a detailed report on the regressions.
+
+### CI and grammar updates
+
+The state file is specific to a grammar version. When used with a different grammar, the fuzzer will detect the change and not report any regression. The state is still updated and can be committed. 
+
 ---  
 
 ## Mini-driver
 
-TODO.
+`ocamlgrammarfuzzer-minidriver` is a minimal driver for `ocamlformat` that contains the checking logic but not the fuzzing logic.
+
+It reads a list of sentences, one per line, and batches call to `ocamlformat`.
+
+It can be used to quickly iterate on a known list of problematic sentences (such as those produced by the `--save-…-errors-to` options).
+
+```bash
+$ ocamlgrammarfuzzer -- --count 10 --length 10 --print-entrypoint --entrypoint implementation > sentences.lst
+$ ocamlgrammarfuzzer-minidriver sentences.lst --ocamlformat _build/default/bin/ocamlformat/main.exe
+line 000002: error: line 1.10-13: Error: Syntax error
+line 000006: error: line 1.8-11: Error: Syntax error
+line 000008: error: line 2.0-0: Error: Syntax error
+```
 
 ---  
 
@@ -317,6 +410,10 @@ TODO.
   We tried to use uniform generation but it is both (1) computationnally
   intensive and (2) not that useful for our use-cases (it is more
   valuable to favor difficult syntactic constructions).
+* **Coverage of lexer specification**. The fuzzer stresses the syntax but has
+  only minimal knowledge of the lexical conventions of OCaml. It is not
+  sufficient to detect errors due to whitespaces (such as unexpected line
+  returns), repeated comments, doc strings etc.
 
 ---  
 
