@@ -119,12 +119,12 @@ Below is the complete list (the driver file already contains the help strings).
 
 | Option                       | Argument            | Meaning                                                               |
 |------------------------------|---------------------|-----------------------------------------------------------------------|
-| `--count`                    | `<int>`             | Number of sentences to generate (default = 1).                        |
-| `--length`                   | `<int>`             | Approximate number of tokens per sentence (default = 100).            |
-| `--seed`                     | `<int>`             | Random seed (default = system time).                                  |
+| `--count`                    | `<int>`             | Number of sentences to generate (default=1).                          |
+| `--length`                   | `<int>`             | Approximate number of tokens per sentence (default=100).              |
+| `--seed`                     | `<int>`             | Random seed (default=system time).                                    |
 | `--entrypoint`               | `<symbol>`          | Generate sentences starting from this non‑terminal.                   |
 | `--weight`                   | `<float> <pattern>` | Multiply the weight of productions matching `<pattern>` by `<float>`. |
-| `--avoid`                    | `<pattern>`         | Set weight = 0 for productions matching `<pattern>`.                  |
+| `--avoid`                    | `<pattern>`         | Set weight=0 for productions matching `<pattern>`.                    |
 | `--focus`                    | `<pattern>`         | Bias generation toward productions matching `<pattern>`.              |
 | `--exhaust`                  | –                   | Deterministic exhaustive generation (ignores `--count`).              |
 | `--ocamlformat`              | `<path>`            | Customize ocamlformat command to use in check mode.                   |
@@ -134,11 +134,11 @@ Below is the complete list (the driver file already contains the help strings).
 | `--comments`                 | –                   | Insert fake comments in the generated code.                           |
 | `--print-entrypoint`         | –                   | When printing, prefix each sentence with the entrypoint name.         |
 | `--terminal`                 | `<NAME>=<TEXT>`     | Override the printed text for a terminal symbol.                      |
-| `--jobs`                     | `<int>`             | Parallel `ocamlformat` processes (default = 8).                       |
-| `--batch-size`               | `<int>`             | Number of files per `ocamlformat` batch (default = 400).              |
+| `--jobs`                     | `<int>`             | Parallel `ocamlformat` processes (default=8).                         |
+| `--batch-size`               | `<int>`             | Number of files per `ocamlformat` batch (default=400).                |
 | `--ocamlformat-check`        | –                   | Run in *check mode* (see below).                                      |
-| `--save-report-to`           | `<path>`            | Where to write the Markdown report (default = stdout).                |
-| `--max-report`               | `<int>`             | Maximum derivations per error message (default = 20).               |
+| `--save-report-to`           | `<path>`            | Where to write the Markdown report (default=stdout).                  |
+| `--max-report`               | `<int>`             | Maximum derivations per error message (default=20).                   |
 | `--save-successful-to`       | `<path>`            | Save successful sentences (no errors) to a file.                      |
 | `--save-lexer-errors-to`     | `<path>`            | Save sentences that caused lexer errors.                              |
 | `--save-parser-errors-to`    | `<path>`            | Save sentences that caused parser errors.                             |
@@ -146,7 +146,9 @@ Below is the complete list (the driver file already contains the help strings).
 | `--save-comment-errors-to`   | `<path>`            | Save sentences that lost comments.                                    |
 | `--save-internal-errors-to`  | `<path>`            | Save sentences that caused internal or “red‑herring” errors.          |
 | `-v`                         | –                   | Increase verbosity (can be repeated).                                 |
-| `--track-regressions-in`     | `<path>`            | Save and track failures accross runs. See **Continuous Integration**. |
+| `--track-regressions-from`   | `<path>`            | Load failures from a previous run and detect regressions.             |
+| `--track-regressions-to`     | `<path>`            | Save failures from current run.                                       |
+| `--track-regressions-in`     | `<path>`            | Track failures accross runs. See **Continuous Integration**.          |
 
 ---  
 
@@ -188,6 +190,8 @@ When `--ocamlformat-check` is enabled, four kinds of output are produced:
    compared accross runs to detect regressions (sentences that could be
    formatted before but fail now). Up to `--max-report` regressions are printed
    and the exit code is set to 1 if at least one regression was detected.
+   `--track-regressions-from` is used to only compare with a previous run and
+   `--track-regressions-to` is used to only log failures from current run.
 
 ---  
 
@@ -358,6 +362,15 @@ Use the new state for future reference:
 ``` bash
 git add fuzzer_state.dat
 # and/or dune promote if applicable
+```
+
+Dune does not support using a single file as input and as output, so it is better to use two different files and explicitly promote the output:
+
+``` bash
+ocamlgrammarfuzzer --ocamlformat-check --oxcaml --exhaust --comments 
+                   --ocamlformat _build/default/bin/ocamlformat/main.exe 
+                   --track-regressions-from fuzzer_state.dat 
+                   --track-regressions-to fuzzer_state_new.dat
 ```
 
 Updating the state can be done both to ignore some regressions that were reported, or, when more sentences succeed, to make future tests stricter.
