@@ -1513,7 +1513,7 @@ let track_regressions path_from path_to derivations outcome stats =
                 | 0 -> ()
                 | delta ->
                    let improvement = if high_is_better then delta > 0 else delta < 0 in
-                   Printf.printf "%s: %+d (%s)\n" name delta
+                   Printf.printf "Change in %s: %+d (%s)\n" name delta
                      (if improvement then "improvement" else "REGRESSION")
               in
               print "valid" true
@@ -1538,7 +1538,7 @@ let track_regressions path_from path_to derivations outcome stats =
               if not (List.is_empty errors) then (
                 result := false;
                 if !reported < !opt_max_errors_report then (
-                  print_string "regression: ";
+                  print_string "Regression: ";
                   Derivation.iter_terminals derivations.(index)
                     ~f:(Source_printer.add_terminal printer);
                   Source_printer.flush_only_source_to_channel printer stdout;
@@ -1720,7 +1720,7 @@ let check_mode () =
     (fun errs -> has_kind Internal_error errs ||
                  has_kind Red_herring errs);
   output_sentences !opt_save_comment_errors (has_kind Comment);
-  flush_all ();
+  flush stdout;
   (* Track regressions *)
   let result =
     track_regressions
