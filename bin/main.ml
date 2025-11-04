@@ -44,6 +44,7 @@ let opt_save_comment_errors = ref ""
 
 let opt_track_regressions_from = ref ""
 let opt_track_regressions_to = ref ""
+let opt_regressions_non_fatal = ref false
 let opt_debug_log_output = ref false
 
 let add_terminal str =
@@ -92,6 +93,8 @@ let spec_list = [
   ("--track-regressions-in"     , Arg.String (fun x -> opt_track_regressions_from := x; opt_track_regressions_to := x),
    "<path> --track-regressions-in x is --track-regressions-from x --track-regressions-to x"
   );
+  ("--regressions-not-fatal"    , Arg.Set opt_regressions_non_fatal,
+   " Exit code should not be affected by a regression.");
   (* Misc *)
   ("-v"         , Arg.Unit (fun () -> incr Misc.verbosity_level), " Increase verbosity");
   ("--print-derivation", Arg.String (push opt_print_derivations), "<sentence> Print the grammatical derivation of a sentence");
@@ -1728,7 +1731,7 @@ let check_mode () =
       derivations outcome stats;
   in
   close_outputs ();
-  if result then
+  if result || !opt_regressions_non_fatal then
     exit 0
   else
     exit 1
