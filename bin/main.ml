@@ -577,8 +577,6 @@ let rec fuzz size0 cell =
         | Some (reduction, cell) ->
           Derivation.expand cell (fuzz size cell) reduction
 
-let () = Misc.stopwatch 1 "Start BFS"
-
 let plural = function
   | [] | [_] -> ""
   | _ -> "s"
@@ -636,27 +634,28 @@ let entrypoints =
   in
   find_entrypoints entrypoints
 
-let bfs = Vector.make Reach.Cell.n []
-
-let () =
+let bfs =
+  let bfs = Vector.make Reach.Cell.n (max_int, []) in
+  Misc.stopwatch 1 "Start BFS";
   let todo = ref [] in
-  let reachable cell = Reach.Analysis.cost cell < max_int in
-  let visit path cell =
+  let visit cost path cell =
     match bfs.:(cell) with
-    | _ :: _ -> ()
-    | [] ->
-      bfs.:(cell) <- path;
+    | (cost', _ :: _) when cost >= cost' -> ()
+    | _ ->
+      bfs.:(cell) <- (cost, path);
       push todo cell
   in
   let propagate cell =
-    let path = bfs.:(cell) in
+    let (cost, path) = bfs.:(cell) in
     let node, i_pre, i_post = Reach.Cell.decode cell in
     match Reach.Tree.split node with
     | R (l, r) ->
       iter_sub_nodes ~f:(fun left right ->
-          if reachable left && reachable right then (
-            visit (Derivation.Left_of {right; meta=cell} :: path) left;
-            visit (Derivation.Right_of {left; meta=cell} :: path) right;
+          let cleft = Reach.Analysis.cost left in
+          let cright = Reach.Analysis.cost right in
+          if cleft < max_int && cright < max_int then (
+            visit (cost + cright) (Derivation.Left_of {right; meta=cell} :: path) left;
+            visit (cost + cleft) (Derivation.Right_of {left; meta=cell} :: path) right;
           )
         ) i_pre i_post l r
     | L tr ->
@@ -665,16 +664,17 @@ let () =
       | L gt ->
         iter_eqns i_pre i_post gt ~f:(fun reduction cell' ->
             if weights.:(reduction.production) > 0.0 then
-              visit (In_expansion {reduction; meta=cell} :: path) cell'
+              visit cost (In_expansion {reduction; meta=cell} :: path) cell'
           )
   in
   IndexSet.iter (fun tr ->
       let node = Reach.Tree.leaf (Transition.of_goto grammar tr) in
-      visit [] (Reach.Cell.encode node ~pre:0 ~post:0)
+      visit 0 [] (Reach.Cell.encode node ~pre:0 ~post:0)
     ) entrypoints;
   let counter = ref 0 in
   fixpoint ~counter ~propagate todo;
-  Misc.stopwatch 1 "Stop BFS (depth: %d)" !counter
+  Misc.stopwatch 1 "Stop BFS (depth: %d)" !counter;
+  bfs
 
 (* Check we know how to print each terminal *)
 
@@ -804,7 +804,7 @@ let derivations =
       | exception Index.End_of_set -> Seq.Nil
       | cell when Reach.Analysis.cost cell = max_int (* empty language *) ||
                   not (Boolvector.test todo cell) ||
-                  List.is_empty bfs.:(cell) (* unreachable from entrypoint *)
+                  List.is_empty (snd bfs.:(cell)) (* unreachable from entrypoint *)
         -> next_cell ()
       | cell ->
         let length = ref !opt_length in
@@ -813,7 +813,7 @@ let derivations =
           length := !length - Derivation.length der;
           der
         in
-        let path = List.map (Derivation.map_path gen_path_component) bfs.:(cell) in
+        let path = List.map (Derivation.map_path gen_path_component) (snd bfs.:(cell)) in
         let leaf = gen_cell !length cell in
         let der = List.fold_left Derivation.unroll_path leaf path in
         mark_derivation der;
