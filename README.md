@@ -117,36 +117,36 @@ let x = 42
 
 Below is the complete list (the driver file already contains the help strings).
 
-| Option | Argument | Meaning |
-|--------|----------|---------|
-| `--count` | `<int>` | Number of sentences to generate (default = 1). |
-| `--length` | `<int>` | Approximate number of tokens per sentence (default = 100). |
-| `--seed` | `<int>` | Random seed (default = system time). |
-| `--entrypoint` | `<symbol>` | Generate sentences starting from this non‑terminal. |
-| `--weight` | `<float> <pattern>` | Multiply the weight of productions matching `<pattern>` by `<float>`. |
-| `--avoid` | `<pattern>` | Set weight = 0 for productions matching `<pattern>`. |
-| `--focus` | `<pattern>` | Bias generation toward productions matching `<pattern>`. |
-| `--exhaust` | – | Deterministic exhaustive generation (ignores `--count`). |
-| `--ocamlformat` | `<path>` | Customize ocamlformat command to use in check mode. |
-| `--oxcaml` | – | Use the OxCaml dialect instead of the standard OCaml grammar. | – | 
-| `--lr1` | – | Interpret builtin grammars as LR(1) instead of LALR. |
-| `--cmly` | `<path.cmly>` | Load a grammar from a Menhir `.cmly` file. |
-| `--comments` | – | Insert fake comments in the generated code. |
-| `--print-entrypoint` | – | When printing, prefix each sentence with the entrypoint name. |
-| `--terminal` | `<NAME>=<TEXT>` | Override the printed text for a terminal symbol. |
-| `--jobs` | `<int>` | Parallel `ocamlformat` processes (default = 8). |
-| `--batch-size` | `<int>` | Number of files per `ocamlformat` batch (default = 400). |
-| `--ocamlformat-check` | – | Run in *check mode* (see below). |
-| `--save-report-to` | `<path>` | Where to write the Markdown report (default = stdout). |
-| `--max-report` | `<int>` | Maximum derivations per error message (default = 20). |
-| `--save-successful-to` | `<path>` | Save successful sentences (no errors) to a file. |
-| `--save-lexer-errors-to` | `<path>` | Save sentences that caused lexer errors. |
-| `--save-parser-errors-to` | `<path>` | Save sentences that caused parser errors. |
-| `--save-invariant-errors-to` | `<path>` | Save sentences that triggered syntactic‑invariant errors. |
-| `--save-comment-errors-to` | `<path>` | Save sentences that lost comments. |
-| `--save-internal-errors-to` | `<path>` | Save sentences that caused internal or “red‑herring” errors. |
-| `-v` | – | Increase verbosity (can be repeated). |
-| `--track-regressions-in` | `<path>` | When checking, save success state in a file (in a custom text format). If the file already exists, results of the current run are compared to it. If a regression is detected, exit code is set to 1. Finally, the file is updated with the current state. |
+| Option                       | Argument            | Meaning                                                               |
+|------------------------------|---------------------|-----------------------------------------------------------------------|
+| `--count`                    | `<int>`             | Number of sentences to generate (default = 1).                        |
+| `--length`                   | `<int>`             | Approximate number of tokens per sentence (default = 100).            |
+| `--seed`                     | `<int>`             | Random seed (default = system time).                                  |
+| `--entrypoint`               | `<symbol>`          | Generate sentences starting from this non‑terminal.                   |
+| `--weight`                   | `<float> <pattern>` | Multiply the weight of productions matching `<pattern>` by `<float>`. |
+| `--avoid`                    | `<pattern>`         | Set weight = 0 for productions matching `<pattern>`.                  |
+| `--focus`                    | `<pattern>`         | Bias generation toward productions matching `<pattern>`.              |
+| `--exhaust`                  | –                   | Deterministic exhaustive generation (ignores `--count`).              |
+| `--ocamlformat`              | `<path>`            | Customize ocamlformat command to use in check mode.                   |
+| `--oxcaml`                   | –                   | Use the OxCaml dialect instead of the standard OCaml grammar.         |
+| `--lr1`                      | –                   | Interpret builtin grammars as LR(1) instead of LALR.                  |
+| `--cmly`                     | `<path.cmly>`       | Load a grammar from a Menhir `.cmly` file.                            |
+| `--comments`                 | –                   | Insert fake comments in the generated code.                           |
+| `--print-entrypoint`         | –                   | When printing, prefix each sentence with the entrypoint name.         |
+| `--terminal`                 | `<NAME>=<TEXT>`     | Override the printed text for a terminal symbol.                      |
+| `--jobs`                     | `<int>`             | Parallel `ocamlformat` processes (default = 8).                       |
+| `--batch-size`               | `<int>`             | Number of files per `ocamlformat` batch (default = 400).              |
+| `--ocamlformat-check`        | –                   | Run in *check mode* (see below).                                      |
+| `--save-report-to`           | `<path>`            | Where to write the Markdown report (default = stdout).                |
+| `--max-report`               | `<int>`             | Maximum derivations per error message (default = 20).               |
+| `--save-successful-to`       | `<path>`            | Save successful sentences (no errors) to a file.                      |
+| `--save-lexer-errors-to`     | `<path>`            | Save sentences that caused lexer errors.                              |
+| `--save-parser-errors-to`    | `<path>`            | Save sentences that caused parser errors.                             |
+| `--save-invariant-errors-to` | `<path>`            | Save sentences that triggered syntactic‑invariant errors.             |
+| `--save-comment-errors-to`   | `<path>`            | Save sentences that lost comments.                                    |
+| `--save-internal-errors-to`  | `<path>`            | Save sentences that caused internal or “red‑herring” errors.          |
+| `-v`                         | –                   | Increase verbosity (can be repeated).                                 |
+| `--track-regressions-in`     | `<path>`            | Save and track failures accross runs. See **Continuous Integration**. |
 
 ---  
 
@@ -227,7 +227,11 @@ errors.
 
 ## Extending / custom grammars
 
-If you have a Menhir grammar for a language extension, you can feed it directly:
+The fuzzer comes with 4 builtin grammars: OCaml (default) and OxCaml (flag
+`--oxcaml`), seen either as LALR (default) or LR(1) (flag `--lr1`) grammars.
+The LALR grammars should be preferred; the LR(1) mode is provided for advanced uses. 
+
+If you have a custom grammar, you can override the builtin ones with `--cmly`:
 
 ```bash
 ocamlgrammarfuzzer --cmly my_ext.cmly --entrypoint my_ext_root
@@ -269,17 +273,20 @@ The pattern can be:
   - The left-handside can be omitted or replaced by `_`; in this case, the set
     of rules with a matching right-handside is considered.
     `_: _* SEMISEMI _*` matches all rules involving a `SEMISEMI` (`;;`).
-  - For focus only, one or more `.` can be inserted to identify the "positions
-    of interest" which should be focused on. For instance `expr: _* . PLUS _*`
-    will generate sentences to cover all the way something on the left-side of a
+  - For focus only, one or more `.` can be inserted to identify the positions of
+    interest, those on which to focus. For instance `expr: _* . PLUS _*` will
+    generate sentences to cover all the way something on the left-side of a
     `PLUS` can be reduced.
 
 ---  
 
-
 ## Error classification
 
 TODO.
+
+---  
+
+## Continuous integration
 
 ---  
 
@@ -296,17 +303,13 @@ TODO.
   avoiding generating problematic sentences.
 * **Error classification** depends on heuristics tuned to produce a useful
   classification. Don't hesitate to share ideas that could improve the process.
-* **Exhaustive mode can explode**. The number of reachable productions may be
-  huge; memory consumption grows significantly with the size of the LR
-  automaton.
-  For reference, OxCaml's grammar of september 2025 tranlates to ~1M test sentences.
 * **Error‑message parsing** is hard-coded to match the behavior of
   `ocamlformat`; if its output were to change, the parser will need to be updated.
 * **Sensitivity to changes**. The fuzzing process is very sensitive to changes
   to the grammar. Even with a fixed seed, the set of sentences produced can
   change completely when the grammar is updated.
   We could tackle that to some extent in the future, but for reproducible
-  processses, we suggest to use deterministic generation (`--exhaust`) and to
+  processes, we suggest to use deterministic generation (`--exhaust`) and to
   store the generated sentences.
 * **Biased generation**. The algorithm used for generating sentences is correct
   but not uniform (in particular, it is not a
