@@ -1720,6 +1720,7 @@ let check_mode () =
     (fun errs -> has_kind Internal_error errs ||
                  has_kind Red_herring errs);
   output_sentences !opt_save_comment_errors (has_kind Comment);
+  flush_all ();
   (* Track regressions *)
   let result =
     track_regressions
