@@ -98,23 +98,23 @@ let () = match !opt_seed with
 
 (* Load and preprocess the grammar *)
 
-module Grammar = MenhirSdk.Cmly_read.FromString(struct
-    let content =
-      if !opt_cmly <> "" then (
-        if !opt_oxcaml || !opt_lr1 then
-          prerr_endline "--cmly: a grammar has been provided, ignoring --oxcaml / --lr1";
-        let ic = open_in_bin !opt_cmly in
-        let length = in_channel_length ic in
-        let data = really_input_string ic length in
-        close_in ic;
-        data
-      ) else
-        match !opt_oxcaml, !opt_lr1 with
-        | true , false -> Oxcaml_grammar.lalr
-        | true , true  -> Oxcaml_grammar.lr1
-        | false, false -> Ocaml_grammar.lalr
-        | false, true  -> Ocaml_grammar.lr1
-  end)
+let cmly_content =
+  if !opt_cmly <> "" then (
+    if !opt_oxcaml || !opt_lr1 then
+      prerr_endline "--cmly: a grammar has been provided, ignoring --oxcaml / --lr1";
+    let ic = open_in_bin !opt_cmly in
+    let length = in_channel_length ic in
+    let data = really_input_string ic length in
+    close_in ic;
+    data
+  ) else
+    match !opt_oxcaml, !opt_lr1 with
+    | true , false -> Oxcaml_grammar.lalr
+    | true , true  -> Oxcaml_grammar.lr1
+    | false, false -> Ocaml_grammar.lalr
+    | false, true  -> Ocaml_grammar.lr1
+
+module Grammar = MenhirSdk.Cmly_read.FromString(struct let content = cmly_content end)
 
 include Info.Lift(Grammar)
 open Info
@@ -1468,15 +1468,20 @@ type stats = {
 let track_regressions path derivations outcome stats =
   let result = ref true in
   let header = "OCAMLGRAMMARFUZZER0" in
+  let hash = Digest.string cmly_content in
   let trailer = "END" in
   if Sys.file_exists path then (
     let ic = open_in_bin path in
     begin try
         if input_line ic <> header then
           failwith "invalid file format";
+        let hash' = input_line ic in
+        if hash <> hash' then
+          failwithf "different grammar (hash: %s, expected: %s)"
+            hash' hash;
         let count = int_of_string (input_line ic) in
         if count <> Array.length outcome then
-          failwithf "different number of sentences (got:%d expected:%d)"
+          failwithf "different number of sentences (got: %d, expected: %d)"
             count (Array.length outcome);
         let line = input_line ic in
         Scanf.sscanf line
@@ -1552,8 +1557,7 @@ let track_regressions path derivations outcome stats =
   );
   let oc = open_out_bin path in
   let p fmt = Printf.fprintf oc fmt in
-  p "%s\n" header;
-  p "%d\n" (Array.length outcome);
+  p "%s\n%s\n%d\n" header hash (Array.length outcome);
   p "valid:%d syntax_errors:%d with_comments_dropped:%d \
      comments_dropped:%d internal_errors:%d\n"
     stats.valid stats.syntax_errors stats.with_comments_dropped
