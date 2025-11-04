@@ -1482,7 +1482,7 @@ type stats = {
 let track_regressions path derivations outcome stats =
   let result = ref true in
   let header = "OCAMLGRAMMARFUZZER0" in
-  let hash = Digest.string cmly_content in
+  let hash = Digest.to_hex (Digest.string cmly_content) in
   let trailer = "END" in
   if Sys.file_exists path then (
     let ic = open_in_bin path in
