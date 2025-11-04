@@ -4,19 +4,17 @@
 
 (generate_opam_files true)
 
-(authors "Frédéric Bour <frederic.bour@lakaban.net>")
-
-(maintainers "Frédéric Bour <frederic.bour@lakaban.net")
+(authors "Frédéric Bour <fred@shogan.ai>")
+(maintainers "Frédéric Bour <fred@shogan.ai>")
 
 (license MIT)
-
-(documentation https://url/to/documentation)
 
 (package
  (name ocamlgrammarfuzzer)
  (synopsis "A fuzzer for OCamlformat")
- (depends ocaml))
+ (homepage "https://github.com/shogan-ai/ocamlgrammarfuzzer")
+ (bug_reports "https://github.com/shogan-ai/ocamlgrammarfuzzer/issues")
+ (documentation "https://github.com/shogan-ai/ocamlgrammarfuzzer/blob/main/README.md")
+ (depends ocaml cmon menhir))
 
 (using menhir 3.0)
-
-; See the complete stanza docs at https://dune.readthedocs.io/en/stable/reference/dune-project/index.html
