@@ -1422,12 +1422,17 @@ let print_mode () =
   Seq.iter begin fun der ->
     if !opt_print_entrypoint then (
       let entrypoint =
-        let node, _, _ = Reach.Cell.decode (Derivation.meta der) in
-        match Reach.Tree.split node with
-        | R _ -> assert false
-        | L tr -> Transition.symbol grammar tr
+        match der.Derivation.desc with
+        | Expand {expansion=_; reduction} ->
+          let prod = reduction.Reachability.production in
+          Production.lhs grammar prod
+        | _ ->
+          prerr_endline "Cannot locate entrypoint in derivation:";
+          Derivation_printer.output stderr (Derivation.print grammar der);
+          prerr_newline ();
+          assert false
       in
-      output_string stdout (Symbol.name grammar entrypoint);
+      output_string stdout (Nonterminal.to_string grammar entrypoint);
       output_string stdout ": ";
     );
     Derivation.iter_terminals ~f:(Source_printer.add_terminal printer) der;
