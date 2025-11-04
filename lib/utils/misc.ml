@@ -330,6 +330,10 @@ let rec list_rev_iter f = function
     f x1
   | [] -> ()
 
+let rec list_take n = function
+  | x :: xs when n > 0 -> x :: list_take (n - 1) xs
+  | _ -> []
+
 let rec list_drop n = function
   | _ :: xs when n > 0 -> list_drop (n - 1) xs
   | xs -> xs

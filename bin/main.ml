@@ -786,7 +786,7 @@ let derivations =
         end;
         match
           List.sort (compare_fst Int.compare) !candidates
-          |> List.take 10
+          |> list_take 10
           |> List.rev_map snd
         with
         | [] -> Syntax.error pos "unknown symbol %s." name
