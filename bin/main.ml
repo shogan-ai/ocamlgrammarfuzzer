@@ -34,6 +34,7 @@ let opt_save_internal_errors = ref ""
 let opt_save_comment_errors = ref ""
 
 let opt_track_regressions = ref ""
+let opt_debug_log_output = ref false
 
 let add_terminal str =
   match String.split_on_char '=' str with
@@ -81,6 +82,7 @@ let spec_list = [
   (* Misc *)
   ("-v"         , Arg.Unit (fun () -> incr Misc.verbosity_level), " Increase verbosity");
   ("--print-derivation", Arg.String (push opt_print_derivations), "<sentence> Print the grammatical derivation of a sentence");
+  ("--debug-log-output", Arg.Set opt_debug_log_output, " Log output of ocamlformat for debug purpose");
 ]
 
 let usage_msg = "Usage: ocamlgrammarfuzzer [options]"
@@ -1593,6 +1595,9 @@ let check_mode () =
       ~ocamlformat_command:!opt_ocamlformat
       ~jobs:(Int.max 0 !opt_jobs)
       ~batch_size:(Int.max 1 !opt_batch_size)
+      ?debug_line:(if !opt_debug_log_output then
+                     Some prerr_endline
+                   else None)
     |> Seq.mapi begin fun i errors ->
       let source_kind, locations, _ = sources.(i) in
       let errors =

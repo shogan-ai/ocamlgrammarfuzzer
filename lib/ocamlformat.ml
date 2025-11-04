@@ -255,7 +255,7 @@ let default_batch_size = 80
 let temp_dir = Filename.get_temp_dir_name ()
 
 let temp_path id i ext =
-  Filename.concat temp_dir (Printf.sprintf "ocamlgrammarfuzzer_%d-%d.%s" id i ext)
+  Filename.concat temp_dir (Printf.sprintf "ocamlgrammarfuzzer_%04d-%04d.%s" id i ext)
 
 let temp_path_index name =
   let name = Filename.remove_extension (Filename.basename name) in
