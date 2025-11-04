@@ -1,3 +1,12 @@
+(**************************************************************************)
+(*                                                                        *)
+(*        OCamlgrammarfuzzer © 2025 by Frédéric Bour, Shogan.ai          *)
+(*                                                                        *)
+(*                     SPDX-License-Identifier: MIT                       *)
+(*                   See the LICENSE file for details.                    *)
+(*                                                                        *)
+(**************************************************************************)
+
 open Fix.Indexing
 
 include SetSig.S1 with type 'a t = private IntSet.t

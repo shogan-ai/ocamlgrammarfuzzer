@@ -1,1 +1,10 @@
+(**************************************************************************)
+(*                                                                        *)
+(*        OCamlgrammarfuzzer © 2025 by Frédéric Bour, Shogan.ai          *)
+(*                                                                        *)
+(*                     SPDX-License-Identifier: MIT                       *)
+(*                   See the LICENSE file for details.                    *)
+(*                                                                        *)
+(**************************************************************************)
+
 include Map.S with type key = int

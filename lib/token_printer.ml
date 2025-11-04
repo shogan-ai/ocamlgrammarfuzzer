@@ -1,3 +1,12 @@
+(**************************************************************************)
+(*                                                                        *)
+(*        OCamlgrammarfuzzer © 2025 by Frédéric Bour, Shogan.ai          *)
+(*                                                                        *)
+(*                     SPDX-License-Identifier: MIT                       *)
+(*                   See the LICENSE file for details.                    *)
+(*                                                                        *)
+(**************************************************************************)
+
 open Fix.Indexing
 open Utils
 open Misc

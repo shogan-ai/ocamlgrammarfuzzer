@@ -1,3 +1,12 @@
+(**************************************************************************)
+(*                                                                        *)
+(*        OCamlgrammarfuzzer © 2025 by Frédéric Bour, Shogan.ai          *)
+(*                                                                        *)
+(*                     SPDX-License-Identifier: MIT                       *)
+(*                   See the LICENSE file for details.                    *)
+(*                                                                        *)
+(**************************************************************************)
+
 module Increasing_ref = struct
   type ('a, 'b) piece = ('a IndexSet.t * 'b IndexSet.t)
   type ('a, 'b) t = ('a, 'b IndexSet.t) IndexMap.t

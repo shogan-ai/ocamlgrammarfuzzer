@@ -1,3 +1,12 @@
+(**************************************************************************)
+(*                                                                        *)
+(*        OCamlgrammarfuzzer © 2025 by Frédéric Bour, Shogan.ai          *)
+(*                                                                        *)
+(*                     SPDX-License-Identifier: MIT                       *)
+(*                   See the LICENSE file for details.                    *)
+(*                                                                        *)
+(**************************************************************************)
+
 module Make(T : sig
     type 'a t
     val compare : 'a t -> 'a t -> int

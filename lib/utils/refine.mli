@@ -1,3 +1,11 @@
+(**************************************************************************)
+(*                                                                        *)
+(*        OCamlgrammarfuzzer © 2025 by Frédéric Bour, Shogan.ai          *)
+(*                                                                        *)
+(*                     SPDX-License-Identifier: MIT                       *)
+(*                   See the LICENSE file for details.                    *)
+(*                                                                        *)
+(**************************************************************************)
 
 (** [Refine] computes the refined partition of a list of overlapping set: the
     smallest list of non-overlapping sets such that each set is a subset of one

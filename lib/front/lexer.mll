@@ -1,5 +1,12 @@
 (**************************************************************************)
 (*                                                                        *)
+(*        OCamlgrammarfuzzer © 2025 by Frédéric Bour, Shogan.ai          *)
+(*                                                                        *)
+(*                     SPDX-License-Identifier: MIT                       *)
+(*                   See the LICENSE file for details.                    *)
+(*                                                                        *)
+(* The lexer specification is taken from the OCaml project:               *)
+(*                                                                        *)
 (*                                 OCaml                                  *)
 (*                                                                        *)
 (*             Xavier Leroy, projet Cristal, INRIA Rocquencourt           *)
@@ -12,8 +19,6 @@
 (*   special exception on linking described in the file LICENSE.          *)
 (*                                                                        *)
 (**************************************************************************)
-
-(* The lexical analyzer for lexer definitions. Bootstrapped! *)
 
 {
 open Parser
