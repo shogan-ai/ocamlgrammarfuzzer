@@ -1433,7 +1433,8 @@ let report_non_located_errors ?(filter=fun _ -> true) oc derivations outcome kin
           (List.map (annotate_with_item item) errors);
       ) (Occurrence_heap.pop_seq heap)
   end by_message;
-  Printf.fprintf oc "\n"
+  if Array.length by_message > 0 then
+    Printf.fprintf oc "\n"
 
 (* default mode: just output a list of sentences *)
 
@@ -1530,11 +1531,11 @@ let check_int_field ic (key, direction, value) =
     let green_color = "\x1b[32m" in
     let red_color = "\x1b[31m" in
     let reset_color = "\x1b[0m" in
-    Printf.eprintf "%s %sChange in %s: %+d%s%s\n"
+    Printf.eprintf "%s%s %s: %+d%s%s\n"
       (if is_improvement then "✅" else "❌")
       (if is_improvement then green_color else red_color)
       key delta
-      (if is_improvement then "" else "(REGRESSION)")
+      (if is_improvement then "" else " (REGRESSION)")
       reset_color
   )
 
@@ -1556,11 +1557,11 @@ let track_regressions path_from path_to path_report derivations outcome stats =
     "sentences" , string_of_int (Array.length outcome);
   ] in
   let int_fields = [
-    "valid sentences"        , `Increase, stats.valid;
-    "with syntax errors"     , `Decrease, stats.syntax_errors;
-    "with comment errors"    , `Decrease, stats.with_comments_dropped;
-    "total comments dropped" , `Decrease, stats.comments_dropped;
-    "internal errors"        , `Decrease, stats.internal_errors;
+    "valid sentences"  , `Increase, stats.valid;
+    "syntax errors"    , `Decrease, stats.syntax_errors;
+    "comment errors"   , `Decrease, stats.with_comments_dropped;
+    "comments dropped" , `Decrease, stats.comments_dropped;
+    "internal errors"  , `Decrease, stats.internal_errors;
   ] in
   let regression_field = ("regressions","") in
   let trailer = "." in
