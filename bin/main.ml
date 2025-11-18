@@ -1565,6 +1565,12 @@ let track_regressions path_from path_to path_report derivations outcome stats =
   let regression_field = ("regressions","") in
   let trailer = "." in
   if path_from <> "" then (
+    let report_to =
+      if path_report <> "" then
+        Some (open_out_bin path_report)
+      else
+        None
+    in
     if Sys.file_exists path_from then (
       let ic = open_in_bin path_from in
       begin try
@@ -1609,11 +1615,10 @@ let track_regressions path_from path_to path_report derivations outcome stats =
           in
           loop ();
           check_successes (Array.length outcome);
-          if path_report <> "" then (
-            let oc = open_out_bin path_report in
-            report_errors oc ~filter:(Array.get previously_ok) derivations outcome;
-            close_out_noerr oc;
-          );
+          let produce_report oc =
+            report_errors oc ~filter:(Array.get previously_ok) derivations outcome
+          in
+          Option.iter produce_report report_to;
         with exn ->
           result := false;
           let msg = match exn with
@@ -1626,6 +1631,7 @@ let track_regressions path_from path_to path_report derivations outcome stats =
       close_in_noerr ic
     ) else
       result := false;
+    Option.iter close_out_noerr report_to;
   );
   if path_to <> "" then (
     let oc = open_out_bin path_to in
