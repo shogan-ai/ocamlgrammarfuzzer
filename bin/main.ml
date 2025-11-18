@@ -1617,15 +1617,29 @@ let track_regressions path_from path_to path_report sources derivations outcome 
             match input_line ic with
             | line when line = trailer -> ()
             | line ->
-              begin match String.index_opt line '-' with
-                | None -> failed (int_of_string line)
+              begin
+                let split_at s i =
+                  let l = String.length s in
+                  (String.sub s 0 i, String.sub s (i + 1) (l - i - 1))
+                in
+                match String.index_opt line '@' with
                 | Some i ->
-                  let l = String.length line in
-                  let first = String.sub line 0 i in
-                  let last = String.sub line (i + 1) (l - i - 1) in
-                  for i = int_of_string first to int_of_string last do
-                    failed i
+                  let first, mask = split_at line i in
+                  let first = int_of_string first in
+                  let mask = Int64.of_string mask in
+                  failed first;
+                  for i = 0 to 63 do
+                    if Int64.logand (Int64.shift_left 1L i) mask <> 0L then
+                      failed (first + i + 1);
                   done
+                | None ->
+                  match String.index_opt line '-' with
+                  | None -> failed (int_of_string line)
+                  | Some i ->
+                    let first, last = split_at line i in
+                    for i = int_of_string first to int_of_string last do
+                      failed i
+                    done
               end;
               loop ()
           in
@@ -1654,21 +1668,29 @@ let track_regressions path_from path_to path_report sources derivations outcome 
     List.iter (write_id_field oc) id_fields;
     List.iter (write_int_field oc) int_fields;
     write_id_field oc failures_field;
-    let range_start = ref min_int in
-    let range_stop = ref min_int in
+    let range_start = ref (-100) in
+    let range_bitmap = ref 0L in
+    let range_stop = ref (-100) in
     let flush_range () =
       if !range_start >= 0 then (
-        if !range_start = !range_stop then
+        if !range_bitmap = 0L then
           write_line oc (string_of_int !range_start)
+        else if !range_bitmap <> -1L then
+          write_line oc (string_of_int !range_start ^ "@" ^
+                         Int64.to_string !range_bitmap)
         else
           write_line oc (string_of_int !range_start ^ "-" ^
                          string_of_int !range_stop)
       )
     in
     let add_index i =
-      if i <> !range_stop + 1 then (
+      let index = i - 1 - !range_start in
+      if index < 64 then
+        range_bitmap := Int64.logor !range_bitmap (Int64.shift_left 1L index)
+      else if !range_bitmap <> -1L || i <> !range_stop + 1 then (
         flush_range ();
         range_start := i;
+        range_bitmap := 0L
       );
       range_stop := i
     in
