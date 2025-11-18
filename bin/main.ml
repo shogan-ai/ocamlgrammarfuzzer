@@ -1553,7 +1553,7 @@ let track_regressions path_from path_to path_report derivations outcome stats =
   let result = ref true in
   let id_fields = [
     "version"   , "OCAMLGRAMMARFUZZER0";
-    "hash"      , Digest.to_hex (Digest.string cmly_content);
+    "grammar hash"      , Digest.to_hex (Digest.string cmly_content);
     "sentences" , string_of_int (Array.length outcome);
   ] in
   let int_fields = [
