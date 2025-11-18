@@ -1550,11 +1550,16 @@ let write_line oc str =
   output_string oc str;
   output_char oc '\n'
 
-let track_regressions path_from path_to path_report derivations outcome stats =
+let track_regressions path_from path_to path_report sources derivations outcome stats =
   let result = ref true in
+  let sources_for_hashing =
+    Marshal.to_string
+      (Array.map (fun (kind,_loc,text) -> (kind, text)) sources)
+      [Marshal.No_sharing]
+  in
   let id_fields = [
     "version"   , "OCAMLGRAMMARFUZZER0";
-    "grammar hash"      , Digest.to_hex (Digest.string cmly_content);
+    "hash"      , Digest.to_hex (Digest.string sources_for_hashing);
     "sentences" , string_of_int (Array.length outcome);
   ] in
   let int_fields = [
@@ -1779,7 +1784,7 @@ let check_mode () =
     track_regressions
       !opt_track_regressions_from !opt_track_regressions_to
       !opt_regressions_report_to
-      derivations outcome stats;
+      sources derivations outcome stats;
   in
   close_outputs ();
   if result || !opt_regressions_non_fatal then
