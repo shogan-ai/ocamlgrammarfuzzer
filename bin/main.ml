@@ -44,6 +44,7 @@ let opt_save_comment_errors = ref ""
 
 let opt_track_regressions_from = ref ""
 let opt_track_regressions_to = ref ""
+let opt_regressions_report_to = ref ""
 let opt_regressions_non_fatal = ref false
 let opt_debug_log_output = ref false
 
@@ -75,7 +76,7 @@ let spec_list = [
   ("--batch-size", Arg.Set_int opt_batch_size, "<int> Number of files to submit to each ocamlformat process (default: 400)");
   (* Check mode *)
   ("--ocamlformat-check"        , Arg.Set opt_ocamlformat_check, " Check mode: check generated sentences with ocamlformat (default is to print them)");
-  ("--save-report-to"           , Arg.Set_string opt_save_report, "<path> In check mode, classify and report detected problems to a faile (default to stdout)");
+  ("--save-report-to"           , Arg.Set_string opt_save_report, "<path> In check mode, classify and report detected problems to a file (default to stdout)");
   ("--max-report"               , Arg.Set_int opt_max_errors_report, "<int> Maximum number of derivations to report per error (default: 20)");
   ("--save-successful-to"       , Arg.Set_string opt_save_successful, "<path> In check mode, save successful sentences to a file");
   ("--save-lexer-errors-to"     , Arg.Set_string opt_save_lexer_errors, "<path> In check mode, save lexer errors to a file");
@@ -93,6 +94,8 @@ let spec_list = [
   ("--track-regressions-in"     , Arg.String (fun x -> opt_track_regressions_from := x; opt_track_regressions_to := x),
    "<path> --track-regressions-in x is --track-regressions-from x --track-regressions-to x"
   );
+  ("--regressions-report-to"    , Arg.Set_string opt_regressions_report_to,
+   "<path> In check mode and when tracking is enabled, report only the regressions (disabled by default)");
   ("--regressions-not-fatal"    , Arg.Set opt_regressions_non_fatal,
    " Exit code should not be affected by a regression.");
   (* Misc *)
@@ -1174,26 +1177,27 @@ let report_error_samples oc ~with_comment errors =
   end;
   Printf.fprintf oc "\n"
 
-let report_located_errors oc derivations outcome =
+let report_located_errors ?(filter=fun _ -> true) oc derivations outcome =
   (* Filter and group common errors by message *)
   let by_message = Hashtbl.create 7 in
   Array.iteri begin fun i (source_kind, errors) ->
-    List.iter begin fun (kind, pos, error) ->
-      match kind with
-      | Internal_error | Red_herring -> ()
-      | _ ->
-        let expansion, reduction =
-          match derivations.(i).Derivation.desc with
-          | Expand {expansion; reduction} -> (expansion, reduction)
-          | _ -> assert false
-        in
-        let derivation = Derivation.items_of_expansion grammar ~expansion ~reduction in
-        let path, _cell, _path = Derivation.get_meta derivation pos in
-        let err = {source_kind; derivation; kind; path; position = Some pos} in
-        match Hashtbl.find_opt by_message error.Ocamlformat.message with
-        | None -> Hashtbl.add by_message error.message (ref [err])
-        | Some r -> push r err
-    end errors
+    if filter i then
+      List.iter begin fun (kind, pos, error) ->
+        match kind with
+        | Internal_error | Red_herring -> ()
+        | _ ->
+          let expansion, reduction =
+            match derivations.(i).Derivation.desc with
+            | Expand {expansion; reduction} -> (expansion, reduction)
+            | _ -> assert false
+          in
+          let derivation = Derivation.items_of_expansion grammar ~expansion ~reduction in
+          let path, _cell, _path = Derivation.get_meta derivation pos in
+          let err = {source_kind; derivation; kind; path; position = Some pos} in
+          match Hashtbl.find_opt by_message error.Ocamlformat.message with
+          | None -> Hashtbl.add by_message error.message (ref [err])
+          | Some r -> push r err
+      end errors
   end outcome;
   (* Order by number of occurrences *)
   let by_message =
@@ -1294,7 +1298,7 @@ let report_located_errors oc derivations outcome =
          such errors may appear as false positives."
     end
 
-let report_non_located_errors oc derivations outcome kind ~header =
+let report_non_located_errors ?(filter=fun _ -> true) oc derivations outcome kind ~header =
   (* Filter and group by error message *)
   let by_message = Hashtbl.create 7 in
   let highly_safe_cells = Boolvector.make Reach.Cell.n false in
@@ -1323,6 +1327,9 @@ let report_non_located_errors oc derivations outcome kind ~header =
 
         (* No error, mark all cells in this derivation as highly safe *)
         mark_safe highly_safe_cells derivations.(i);
+        None
+
+      | _ when not (filter i) ->
         None
 
       | errors ->
@@ -1486,7 +1493,14 @@ type stats = {
   internal_errors: int;
 }
 
-let track_regressions path_from path_to derivations outcome stats =
+let report_errors ?filter oc derivations outcome =
+  report_located_errors ?filter oc derivations outcome;
+  report_non_located_errors ?filter oc derivations outcome Internal_error
+    ~header:internal_error_header;
+  report_non_located_errors ?filter oc derivations outcome Red_herring
+    ~header:red_herring_header
+
+let track_regressions path_from path_to path_report derivations outcome stats =
   let result = ref true in
   let header = "OCAMLGRAMMARFUZZER0" in
   let hash = Digest.to_hex (Digest.string cmly_content) in
@@ -1552,7 +1566,9 @@ let track_regressions path_from path_to derivations outcome stats =
               )
             done
           in
+          let previously_ok = Array.make (Array.length derivations) true in
           let failed line =
+            previously_ok.(line) <- false;
             check_successes line;
             incr current_line;
             assert (!current_line = line + 1);
@@ -1565,7 +1581,12 @@ let track_regressions path_from path_to derivations outcome stats =
                loop ()
           in
           loop ();
-          check_successes (Array.length outcome)
+          check_successes (Array.length outcome);
+          if path_report <> "" then (
+            let oc = open_out_bin path_report in
+            report_errors oc ~filter:(Array.get previously_ok) derivations outcome;
+            close_out_noerr oc;
+          );
         with exn ->
           result := false;
           let msg = match exn with
@@ -1644,12 +1665,9 @@ let check_mode () =
     end
     |> Array.of_seq
   in
-  let report = get_output !opt_save_report in
-  report_located_errors report derivations outcome;
-  report_non_located_errors report derivations outcome Internal_error
-    ~header:internal_error_header;
-  report_non_located_errors report derivations outcome Red_herring
-    ~header:red_herring_header;
+  (* Report all errors *)
+  report_errors (get_output !opt_save_report) derivations outcome;
+  (* Summarize results *)
   let valid = ref 0 in
   let syntax_errors = ref 0 in
   let with_comments_dropped = ref 0 in
@@ -1692,6 +1710,7 @@ let check_mode () =
     stats.syntax_errors    (percent stats.syntax_errors)
     stats.with_comments_dropped (percent stats.with_comments_dropped) stats.comments_dropped
     stats.internal_errors  (percent stats.internal_errors);
+  (* Save sentences by error class *)
   let output_sentences path pred =
     if path <> "" then
       let oc = get_output path in
@@ -1707,7 +1726,6 @@ let check_mode () =
           output_char oc '\n'
         end outcome
   in
-  (* Save sentences by error class *)
   let has_kind kind errors =
     List.exists (fun (kind', _, _) -> kind = kind') errors
   in
@@ -1728,6 +1746,7 @@ let check_mode () =
   let result =
     track_regressions
       !opt_track_regressions_from !opt_track_regressions_to
+      !opt_regressions_report_to
       derivations outcome stats;
   in
   close_outputs ();
