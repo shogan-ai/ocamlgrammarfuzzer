@@ -1569,7 +1569,6 @@ let track_regressions path_from path_to path_report sources derivations outcome 
     "comments dropped" , `Decrease, stats.comments_dropped;
     "internal errors"  , `Decrease, stats.internal_errors;
   ] in
-  let failures_field = ("failures","") in
   let trailer = "." in
   if path_from <> "" then (
     let report_to =
@@ -1583,7 +1582,8 @@ let track_regressions path_from path_to path_report sources derivations outcome 
       begin try
           List.iter (check_id_field ic) id_fields;
           List.iter (check_int_field ic) int_fields;
-          check_id_field ic failures_field;
+          if input_line ic <> "---" then
+            failwith "expecting --- delimiter";
           let current_line = ref 0 in
           let reported = ref 0 in
           let printer = Source_printer.make ~with_padding:false ~with_comments:!opt_comments () in
@@ -1667,7 +1667,7 @@ let track_regressions path_from path_to path_report sources derivations outcome 
     let oc = open_out_bin path_to in
     List.iter (write_id_field oc) id_fields;
     List.iter (write_int_field oc) int_fields;
-    write_id_field oc failures_field;
+    output_string oc "---\n";
     let range_start = ref (-100) in
     let range_bitmap = ref 0L in
     let range_stop = ref (-100) in
