@@ -849,11 +849,10 @@ let report_invalid_entrypoint =
   ) else
     false
 
-let entrypoint_of_derivation der =
-    let node, _, _ = Reach.Cell.decode (Derivation.meta der) in
-    match Reach.Tree.split node with
-    | R _ -> assert false
-    | L tr -> Transition.symbol grammar tr
+let entrypoint_of_derivation = function
+  | {Derivation.desc = Expand x; _} ->
+    Production.lhs grammar x.reduction.production
+  | _ -> assert false
 
 (* Code generation and location mapping.
 
@@ -1101,7 +1100,7 @@ type derivation_kind = Ocamlformat.source_kind =
 
 let derivation_kind der =
   let entrypoint = entrypoint_of_derivation der in
-  match Symbol.name grammar entrypoint with
+  match Nonterminal.to_string grammar entrypoint with
   | "implementation" -> Ocamlformat.Impl
   | "interface" -> Ocamlformat.Intf
   | name ->
