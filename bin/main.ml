@@ -1617,8 +1617,17 @@ let track_regressions path_from path_to path_report sources derivations outcome 
             match input_line ic with
             | line when line = trailer -> ()
             | line ->
-               failed (int_of_string line);
-               loop ()
+              begin match String.index_opt line '-' with
+                | None -> failed (int_of_string line)
+                | Some i ->
+                  let l = String.length line in
+                  let first = String.sub line 0 i in
+                  let last = String.sub line (i + 1) (l - i - 1) in
+                  for i = int_of_string first to int_of_string last do
+                    failed i
+                  done
+              end;
+              loop ()
           in
           loop ();
           check_successes (Array.length outcome);
@@ -1645,10 +1654,29 @@ let track_regressions path_from path_to path_report sources derivations outcome 
     List.iter (write_id_field oc) id_fields;
     List.iter (write_int_field oc) int_fields;
     write_id_field oc failures_field;
+    let range_start = ref min_int in
+    let range_stop = ref min_int in
+    let flush_range () =
+      if !range_start >= 0 then (
+        if !range_start = !range_stop then
+          write_line oc (string_of_int !range_start)
+        else
+          write_line oc (string_of_int !range_start ^ "-" ^
+                         string_of_int !range_stop)
+      )
+    in
+    let add_index i =
+      if i <> !range_stop + 1 then (
+        flush_range ();
+        range_start := i;
+      );
+      range_stop := i
+    in
     Array.iteri begin fun i (_, errors) ->
       if not (List.is_empty errors) then
-        write_line oc (string_of_int i);
+        add_index i
     end outcome;
+    flush_range ();
     write_line oc trailer;
     close_out_noerr oc;
   );
