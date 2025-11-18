@@ -1500,50 +1500,78 @@ let report_errors ?filter oc derivations outcome =
   report_non_located_errors ?filter oc derivations outcome Red_herring
     ~header:red_herring_header
 
+let read_field ic =
+  let line = input_line ic in
+  match String.index_opt line ':' with
+  | Some i ->
+    String.trim (String.sub line 0 i),
+    String.trim (String.sub line (i + 1) (String.length line - i - 1))
+  | None ->
+    failwithf "malformed line %S, expecting \"key: value\"" line
+
+let check_id_field ic (k, v) =
+  let k', v' = read_field ic in
+  if k <> k' then
+    failwithf "expecting field %S, got %S" k k';
+  if v <> v' then
+    failwithf "field %S has value %S, expecting %S; state is likely out of date" k v' v
+
+let check_int_field ic (key, direction, value) =
+  let k', v' = read_field ic in
+  if key <> k' then
+    failwithf "expecting field %S, got %S" key k';
+  let v' = int_of_string v' in
+  let delta = value - v' in
+  if delta <> 0 then (
+    let is_improvement =
+      match direction with
+      | `Decrease -> delta < 0
+      | `Increase -> delta > 0
+    in
+    let green_color = "\x1b[32m" in
+    let red_color = "\x1b[31m" in
+    let reset_color = "\x1b[0m" in
+    Printf.printf "%s %sChange in %s: %+d%s%s\n"
+      (if is_improvement then "✅" else "❌")
+      (if is_improvement then green_color else red_color)
+      key delta
+      (if is_improvement then "" else "(REGRESSION)")
+      reset_color
+  )
+
+let write_id_field oc (k, v) =
+  Printf.fprintf oc "%s: %s\n" k v
+
+let write_int_field oc (k, _, v) =
+  write_id_field oc (k, string_of_int v)
+
+let write_line oc str =
+  output_string oc str;
+  output_char oc '\n'
+
 let track_regressions path_from path_to path_report derivations outcome stats =
   let result = ref true in
-  let header = "OCAMLGRAMMARFUZZER0" in
-  let hash = Digest.to_hex (Digest.string cmly_content) in
-  let trailer = "END" in
+  let id_fields = [
+    "version"   , "OCAMLGRAMMARFUZZER0";
+    "hash"      , Digest.to_hex (Digest.string cmly_content);
+    "sentences" , string_of_int (Array.length outcome);
+  ] in
+  let int_fields = [
+    "valid sentences"        , `Increase, stats.valid;
+    "with syntax errors"     , `Decrease, stats.syntax_errors;
+    "with comment errors"    , `Decrease, stats.with_comments_dropped;
+    "total comments dropped" , `Decrease, stats.comments_dropped;
+    "internal errors"        , `Decrease, stats.internal_errors;
+  ] in
+  let regression_field = ("regressions","") in
+  let trailer = "." in
   if path_from <> "" then (
     if Sys.file_exists path_from then (
       let ic = open_in_bin path_from in
       begin try
-          if input_line ic <> header then
-            failwith "invalid file format";
-          let hash' = input_line ic in
-          if hash <> hash' then
-            failwithf "different grammar (hash: %s, expected: %s)"
-              hash' hash;
-          let count = int_of_string (input_line ic) in
-          if count <> Array.length outcome then
-            failwithf "different number of sentences (got: %d, expected: %d)"
-              count (Array.length outcome);
-          let line = input_line ic in
-          Scanf.sscanf line
-            "valid:%d syntax_errors:%d with_comments_dropped:%d \
-             comments_dropped:%d internal_errors:%d"
-            (fun valid syntax_errors with_comments_dropped
-                 comments_dropped internal_errors ->
-              let print name high_is_better before after =
-                match after - before with
-                | 0 -> ()
-                | delta ->
-                   let improvement = if high_is_better then delta > 0 else delta < 0 in
-                   Printf.printf "Change in %s: %+d (%s)\n" name delta
-                     (if improvement then "improvement" else "REGRESSION")
-              in
-              print "valid" true
-                valid stats.valid;
-              print "syntax errors" false
-                syntax_errors stats.syntax_errors;
-              print "with comments dropped" false
-                with_comments_dropped stats.with_comments_dropped;
-              print "total comments dropped" false
-                comments_dropped stats.comments_dropped;
-              print "internal errors" false
-                internal_errors stats.internal_errors;
-            );
+          List.iter (check_id_field ic) id_fields;
+          List.iter (check_int_field ic) int_fields;
+          check_id_field ic regression_field;
           let current_line = ref 0 in
           let reported = ref 0 in
           let printer = Source_printer.make ~with_padding:false ~with_comments:!opt_comments () in
@@ -1602,17 +1630,14 @@ let track_regressions path_from path_to path_report derivations outcome stats =
   );
   if path_to <> "" then (
     let oc = open_out_bin path_to in
-    let p fmt = Printf.fprintf oc fmt in
-    p "%s\n%s\n%d\n" header hash (Array.length outcome);
-    p "valid:%d syntax_errors:%d with_comments_dropped:%d \
-       comments_dropped:%d internal_errors:%d\n"
-      stats.valid stats.syntax_errors stats.with_comments_dropped
-      stats.comments_dropped stats.internal_errors;
+    List.iter (write_id_field oc) id_fields;
+    List.iter (write_int_field oc) int_fields;
+    write_id_field oc regression_field;
     Array.iteri begin fun i (_, errors) ->
       if not (List.is_empty errors) then
-        p "%d\n" i
-      end outcome;
-    p "%s\n" trailer;
+        write_line oc (string_of_int i);
+    end outcome;
+    write_line oc trailer;
     close_out_noerr oc;
   );
   !result
