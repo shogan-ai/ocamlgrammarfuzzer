@@ -1563,7 +1563,7 @@ let track_regressions path_from path_to path_report derivations outcome stats =
     "comments dropped" , `Decrease, stats.comments_dropped;
     "internal errors"  , `Decrease, stats.internal_errors;
   ] in
-  let regression_field = ("regressions","") in
+  let failures_field = ("failures","") in
   let trailer = "." in
   if path_from <> "" then (
     let report_to =
@@ -1577,7 +1577,7 @@ let track_regressions path_from path_to path_report derivations outcome stats =
       begin try
           List.iter (check_id_field ic) id_fields;
           List.iter (check_int_field ic) int_fields;
-          check_id_field ic regression_field;
+          check_id_field ic failures_field;
           let current_line = ref 0 in
           let reported = ref 0 in
           let printer = Source_printer.make ~with_padding:false ~with_comments:!opt_comments () in
@@ -1595,7 +1595,7 @@ let track_regressions path_from path_to path_report derivations outcome stats =
                   Source_printer.flush_only_source_to_channel printer stdout;
                   print_newline ();
                 ) else if !reported = !opt_max_errors_report then
-                  print_endline "regression: ...";
+                  print_endline "Regression: ...";
                 incr reported
               )
             done
@@ -1638,7 +1638,7 @@ let track_regressions path_from path_to path_report derivations outcome stats =
     let oc = open_out_bin path_to in
     List.iter (write_id_field oc) id_fields;
     List.iter (write_int_field oc) int_fields;
-    write_id_field oc regression_field;
+    write_id_field oc failures_field;
     Array.iteri begin fun i (_, errors) ->
       if not (List.is_empty errors) then
         write_line oc (string_of_int i);
