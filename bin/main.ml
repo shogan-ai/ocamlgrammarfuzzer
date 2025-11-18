@@ -1530,7 +1530,7 @@ let check_int_field ic (key, direction, value) =
     let green_color = "\x1b[32m" in
     let red_color = "\x1b[31m" in
     let reset_color = "\x1b[0m" in
-    Printf.printf "%s %sChange in %s: %+d%s%s\n"
+    Printf.eprintf "%s %sChange in %s: %+d%s%s\n"
       (if is_improvement then "✅" else "❌")
       (if is_improvement then green_color else red_color)
       key delta
