@@ -1539,8 +1539,9 @@ let check_int_field ic (key, direction, value) =
       reset_color
   )
 
-let write_id_field oc (k, v) =
-  Printf.fprintf oc "%s: %s\n" k v
+let write_id_field oc = function
+  | (k, "") -> Printf.fprintf oc "%s:\n" k
+  | (k, v) -> Printf.fprintf oc "%s: %s\n" k v
 
 let write_int_field oc (k, _, v) =
   write_id_field oc (k, string_of_int v)
