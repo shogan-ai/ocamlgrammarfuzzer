@@ -697,6 +697,10 @@ let bfs =
 
 (* Check we know how to print each terminal *)
 
+let gensym () =
+  let k = ref 0 in
+  fun () -> incr k; !k
+
 let terminal_text = Token_printer.for_grammar grammar !opt_terminals
 
 let generate_sentence ?(length=100) ?from () =
@@ -888,7 +892,7 @@ type error_kind =
 module Source_printer : sig
   type t
   val make : with_padding:bool -> with_comments:bool -> unit -> t
-  val add_terminal : t -> g terminal index -> unit
+  val add_terminal : gensym:(unit -> int) -> t -> g terminal index -> unit
 
   type source = string
   type locations
@@ -942,10 +946,11 @@ end = struct
       let endp = endp t in
       t.comment_locations <- (startp, endp) :: t.comment_locations
 
-  let add_terminal t term =
-    match terminal_text.:(term) with
-    | "", _ -> ()
-    | text, kind ->
+  let add_terminal ~gensym t term =
+    let printer, kind = terminal_text.:(term) in
+    match printer gensym with
+    | "" -> ()
+    | text ->
       add_comment kind t;
       let startp = startp kind t in
       Buffer.add_string t.buffer text;
@@ -1030,7 +1035,7 @@ module Sample_sentence_printer : sig
   type t
 
   val make : with_comment:bool -> position:int option -> t
-  val add_terminal : t -> g terminal index -> unit
+  val add_terminal : t -> (unit -> int) -> g terminal index -> unit
   val flush : t -> string list
 end = struct
   type t = {
@@ -1057,8 +1062,9 @@ end = struct
     | n, `Regular -> Buffer.add_char t.buffer ' '; (n + 1)
     | n, `Suffix -> n
 
-  let add_terminal t term =
-    let text, kind = terminal_text.:(term) in
+  let add_terminal t gensym term =
+    let printer, kind = terminal_text.:(term) in
+    let text = printer gensym in
     if t.count = -1 then
       invalid_arg "Sample_sentence_printer.add_terminal: buffer already flushed";
     if text <> "" then (
@@ -1112,7 +1118,7 @@ let derivation_kind der =
     Ocamlformat.Impl
 
 let prepare_derivation_for_check printer der =
-  Derivation.iter_terminals der ~f:(Source_printer.add_terminal printer);
+  Derivation.iter_terminals der ~f:(Source_printer.add_terminal printer ~gensym:(gensym()));
   let locations, source = Source_printer.flush printer in
   (derivation_kind der, locations, source)
 
@@ -1170,7 +1176,7 @@ let report_error_samples oc ~with_comment errors =
     let position = sample.position in
     let printer = Sample_sentence_printer.make ~with_comment ~position in
     Derivation.iter_terminals sample.derivation
-      ~f:(Sample_sentence_printer.add_terminal printer);
+      ~f:(Sample_sentence_printer.add_terminal printer (gensym ()));
     List.iter (Printf.fprintf oc "  %s\n") (Sample_sentence_printer.flush printer);
     Printf.fprintf oc "  ```\n";
   end;
@@ -1458,7 +1464,7 @@ let print_mode () =
       output_string stdout (Nonterminal.to_string grammar entrypoint);
       output_string stdout ": ";
     );
-    Derivation.iter_terminals ~f:(Source_printer.add_terminal printer) der;
+    Derivation.iter_terminals ~f:(Source_printer.add_terminal ~gensym:(gensym()) printer) der;
     Source_printer.flush_only_source_to_channel printer stdout;
     output_char stdout '\n'
   end derivations
@@ -1597,7 +1603,7 @@ let track_regressions path_from path_to path_report sources derivations outcome 
                 if !reported < !opt_max_errors_report then (
                   print_string "Regression: ";
                   Derivation.iter_terminals derivations.(index)
-                    ~f:(Source_printer.add_terminal printer);
+                    ~f:(Source_printer.add_terminal ~gensym:(gensym()) printer);
                   Source_printer.flush_only_source_to_channel printer stdout;
                   print_newline ();
                 ) else if !reported = !opt_max_errors_report then

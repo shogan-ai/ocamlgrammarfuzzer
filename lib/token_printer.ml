@@ -45,7 +45,7 @@ let builtin = function
   | "EXCEPTION"              -> "exception"
   | "EXTERNAL"               -> "external"
   | "FALSE"                  -> "false"
-  | "FLOAT"                  -> "4.0"
+  | "FLOAT"                  -> "%d.0"
   | "FOR"                    -> "for"
   | "FUN"                    -> "fun"
   | "FUNCTION"               -> "function"
@@ -69,8 +69,8 @@ let builtin = function
   | "ANDOP"                  -> "and*"
   | "INHERIT"                -> "inherit"
   | "INITIALIZER"            -> "initializer"
-  | "INT"                    -> "4"
-  | "LABEL"                  -> "~label:"
+  | "INT"                    -> "%d"
+  | "LABEL"                  -> "~label%d:"
   | "LAZY"                   -> "lazy"
   | "LBRACE"                 -> "{"
   | "LBRACELESS"             -> "{<"
@@ -83,7 +83,7 @@ let builtin = function
   | "LESS"                   -> "<"
   | "LESSMINUS"              -> "<-"
   | "LET"                    -> "let"
-  | "LIDENT"                 -> "x"
+  | "LIDENT"                 -> "x%d"
   | "LPAREN"                 -> "("
   | "LBRACKETAT"             -> "[@"
   | "LBRACKETATAT"           -> "[@@"
@@ -121,9 +121,9 @@ let builtin = function
   | "HASHOP"                 -> "##"
   | "SIG"                    -> "sig"
   | "STAR"                   -> "*"
-  | "STRING"                 -> "\"s\""
-  | "QUOTED_STRING_EXPR"     -> "{%ext|s|}"
-  | "QUOTED_STRING_ITEM"     -> "{%%ext|s|}"
+  | "STRING"                 -> "\"s%d\""
+  | "QUOTED_STRING_EXPR"     -> "{%%ext|s%d|}"
+  | "QUOTED_STRING_ITEM"     -> "{%%%%ext|s%d|}"
   | "STRUCT"                 -> "struct"
   | "THEN"                   -> "then"
   | "TILDE"                  -> "~"
@@ -131,15 +131,15 @@ let builtin = function
   | "TRUE"                   -> "true"
   | "TRY"                    -> "try"
   | "TYPE"                   -> "type"
-  | "UIDENT"                 -> "X"
+  | "UIDENT"                 -> "X%d"
   | "UNDERSCORE"             -> "_"
   | "VAL"                    -> "val"
   | "VIRTUAL"                -> "virtual"
   | "WHEN"                   -> "when"
   | "WHILE"                  -> "while"
   | "WITH"                   -> "with"
-  | "COMMENT"                -> "(*comment*)"
-  | "DOCSTRING"              -> "(**documentation*)"
+  | "COMMENT"                -> "(*comment %d*)"
+  | "DOCSTRING"              -> "(**documentation %d*)"
   | "EOL"                    -> "\n"
   | "METAOCAML_ESCAPE"       -> ".~"
   | "METAOCAML_BRACKET_OPEN" -> ".<"
@@ -156,8 +156,8 @@ let builtin = function
   | "UNIQUE"        -> "unique_"
   | "LBRACKETCOLON" -> "[:"
   | "HASH_SUFFIX"   -> "#"
-  | "HASH_INT"      -> "#1l"
-  | "HASH_FLOAT"    -> "#1.0"
+  | "HASH_INT"      -> "#%dl"
+  | "HASH_FLOAT"    -> "#%d.0"
   | "HASHLPAREN"    -> "#("
   | "AT"            -> "@"
   | "ATAT"          -> "@@"
@@ -192,7 +192,17 @@ let for_grammar (grammar : _ Info.grammar) custom =
           | exception Not_found ->
             push unknown name; name
     in
-    (text, kind)
+    let printer = match Terminal.semantic_value grammar t with
+      | None -> fun _ -> text
+      | Some _ ->
+        match Scanf.format_from_string text "%d" with
+        | fmt ->
+          fun gensym -> Printf.sprintf fmt (gensym ())
+        | exception (Scanf.Scan_failure txt)
+          when String.starts_with ~prefix:"bad input: format type mismatch between " txt ->
+          fun _ -> text
+    in
+    (printer, kind)
   in
   match !unknown with
   | [] -> table
