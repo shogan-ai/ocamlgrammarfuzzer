@@ -611,3 +611,52 @@ module Damerau_levenshtein = struct
 
     c.prev.(l1)
 end
+
+module Lcs_with_alignement = struct
+  type cache = {
+    mutable cells: int array;
+  }
+
+  let make_cache () = {cells = [||]}
+
+  let lcs_with_alignement ?cache:(c=make_cache ()) ~equal x y =
+    (* Fill lcs length table *)
+    let m = Array.length x and n = Array.length y in
+    (* Reuse table if possible *)
+    let len = (m + 1) * (n + 1) in
+    if Array.length c.cells < len then
+      c.cells <- Array.make len 0
+    else
+      Array.fill c.cells 0 len 0;
+    (* Quick accessor *)
+    let (.:()) c (x,y) = c.cells.(y * (m + 1) + x) in
+    let (.:()<-) c (x,y) v = c.cells.(y * (m + 1) + x) <- v in
+    for i = 1 to m do
+      for j = 1 to n do
+        c.:(i,j) <-
+          if equal x.(i-1) y.(j-1)
+          then c.:(i-1,j-1) + 1
+          else Int.max c.:(i,j-1) c.:(i-1,j)
+      done
+    done;
+    (* Backtrack to construct a solution *)
+    let lcs_len = c.:(m,n) in
+    let lcs = Array.make lcs_len (0,0) in
+    let i = ref (m - 1) in
+    let j = ref (n - 1) in
+    let k = ref (lcs_len - 1) in
+    while !k >= 0 do
+      if equal x.(!i) y.(!j) then (
+        lcs.(!k) <- (!i, !j);
+        decr i;
+        decr j;
+        decr k;
+      ) else (
+        if c.:(!i+1,!j) > c.:(!i,!j+1) then
+          decr j
+        else
+          decr i;
+      )
+    done;
+    lcs
+end
