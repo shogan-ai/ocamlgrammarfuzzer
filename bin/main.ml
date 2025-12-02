@@ -1545,6 +1545,30 @@ let check_int_field ic (key, direction, value) =
       reset_color
   )
 
+let delta_dec_reader () =
+  let buf = Bytes.make 10 '0' in
+  fun str ->
+    let len = String.length str in
+    Bytes.blit_string str 0 buf (10 - len) len;
+    int_of_string (Bytes.unsafe_to_string buf)
+
+let delta_dec_writer () =
+  let buf = Bytes.make 10 '0' in
+  let last = ref (-1) in
+  fun curr ->
+    assert (curr >= 0);
+    let past = ref !last in
+    last := curr;
+    let curr = ref curr in
+    let index = ref 10 in
+    while !curr <> !past do
+      decr index;
+      Bytes.set buf !index (Char.chr (Char.code '0' + !curr mod 10));
+      curr := !curr / 10;
+      past := !past / 10;
+    done;
+    Bytes.sub_string buf !index (10 - !index)
+
 let write_id_field oc = function
   | (k, "") -> Printf.fprintf oc "%s:\n" k
   | (k, v) -> Printf.fprintf oc "%s: %s\n" k v
@@ -1619,6 +1643,7 @@ let track_regressions path_from path_to path_report sources derivations outcome 
             incr current_line;
             assert (!current_line = line + 1);
           in
+          let int_reader = delta_dec_reader () in
           let rec loop () =
             match input_line ic with
             | line when line = trailer -> ()
@@ -1631,7 +1656,7 @@ let track_regressions path_from path_to path_report sources derivations outcome 
                 match String.index_opt line '@' with
                 | Some i ->
                   let first, mask = split_at line i in
-                  let first = int_of_string first in
+                  let first = int_reader first in
                   let mask = Int64.of_string mask in
                   failed first;
                   for i = 0 to 63 do
@@ -1640,10 +1665,12 @@ let track_regressions path_from path_to path_report sources derivations outcome 
                   done
                 | None ->
                   match String.index_opt line '-' with
-                  | None -> failed (int_of_string line)
+                  | None -> failed (int_reader line)
                   | Some i ->
                     let first, last = split_at line i in
-                    for i = int_of_string first to int_of_string last do
+                    let first = int_reader first in
+                    let last = int_reader last in
+                    for i = first to last do
                       failed i
                     done
               end;
@@ -1675,28 +1702,21 @@ let track_regressions path_from path_to path_report sources derivations outcome 
     List.iter (write_int_field oc) int_fields;
     output_string oc "---\n";
     let range_start = ref (-100) in
-    let range_bitmap = ref 0L in
     let range_stop = ref (-100) in
+    let int_writer = delta_dec_writer () in
     let flush_range () =
       if !range_start >= 0 then (
-        if !range_bitmap = 0L then
-          write_line oc (string_of_int !range_start)
-        else if !range_bitmap <> -1L then
-          write_line oc (string_of_int !range_start ^ "@" ^
-                         Int64.to_string !range_bitmap)
+        let start = int_writer !range_start in
+        if !range_stop = !range_start then
+          write_line oc start
         else
-          write_line oc (string_of_int !range_start ^ "-" ^
-                         string_of_int !range_stop)
+          write_line oc (start ^ "-" ^ int_writer !range_stop)
       )
     in
     let add_index i =
-      let index = i - 1 - !range_start in
-      if index < 64 then
-        range_bitmap := Int64.logor !range_bitmap (Int64.shift_left 1L index)
-      else if !range_bitmap <> -1L || i <> !range_stop + 1 then (
+      if i <> !range_stop + 1 then (
         flush_range ();
         range_start := i;
-        range_bitmap := 0L
       );
       range_stop := i
     in
