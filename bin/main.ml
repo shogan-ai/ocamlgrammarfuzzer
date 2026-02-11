@@ -48,6 +48,8 @@ let opt_regressions_report_to = ref ""
 let opt_regressions_non_fatal = ref false
 let opt_debug_log_output = ref false
 
+let opt_reduce = ref false
+
 let add_terminal str =
   match String.split_on_char '=' str with
   | [key; value] -> push opt_terminals (key, value)
@@ -84,6 +86,7 @@ let spec_list = [
   ("--save-invariant-errors-to" , Arg.Set_string opt_save_invariant_errors, "<path> In check mode, save invariant errors to a file");
   ("--save-comment-errors-to"   , Arg.Set_string opt_save_comment_errors, "<path> In check mode, save comment errors to a file");
   ("--save-internal-errors-to"  , Arg.Set_string opt_save_internal_errors, "<path> In check mode, save internal errors (including red herring) to a file");
+  ("--reduce"                   , Arg.Set opt_reduce, " In check mode, reduce a sentence before reporting it");
   (* CI test *)
   ("--track-regressions-from"   , Arg.Set_string opt_track_regressions_from,
    "<path> In check mode, read success state from a previous run and compare them to current results. \
@@ -498,11 +501,61 @@ let min_sentence =
   ) in
   fun cell -> Lazy.force solve cell
 
+let ocamlformat_check inputs =
+  Ocamlformat.check
+    ~ocamlformat_command:!opt_ocamlformat
+    ~jobs:(Int.max 0 !opt_jobs)
+    ~batch_size:(Int.max 1 !opt_batch_size)
+    ?debug_line:(if !opt_debug_log_output then
+                   Some prerr_endline
+                 else None)
+    inputs
+
+let rec simple_reducer test (der : (g, Reach.r, Reach.Cell.n index) Derivation.t) =
+  match der.desc with
+  | Null | Shift _ -> der
+  | Node node ->
+    let mk left right = Derivation.node der.meta left right in
+    let left = simple_reducer (fun left -> test (mk left node.right)) node.left in
+    let right = simple_reducer (fun right -> test (mk left right)) node.right in
+    mk left right
+  | Expand { expansion; reduction } ->
+    let mk expansion = Derivation.expand der.meta expansion reduction in
+    let min = mk (min_sentence der.meta) in
+    if test min then
+      min
+    else
+      mk (simple_reducer (fun expansion -> test (mk expansion)) expansion)
+
+let reduced = ref 0
+
+let debug_reducer = false
+
+let reduce_with_ocamlformat ~print der =
+  incr reduced;
+  let attempts = ref 0 in
+  let test der =
+    let kind, source = print der in
+    if debug_reducer then (
+      incr attempts;
+      Printf.eprintf "reducing case %d, attempt %d\n" !reduced !attempts;
+      Printf.eprintf "  %s\n" (String.trim source);
+    );
+    match ocamlformat_check (Seq.singleton (kind, source)) () with
+    | Seq.Cons (l, s') ->
+      assert (Seq.is_empty s');
+      not (List.is_empty l)
+    | Seq.Nil ->
+      assert false
+  in
+  simple_reducer test der
+
 (* [fuzz target_length cell] generates a derivation of [cell] aiming to have
    [target_length] terminals.
    The result is a pair [actual_length, derivation] where [actual_length] is the
    actual number of terminals.
 *)
+
 let rec fuzz size0 cell =
   let current_cost = Reach.Analysis.cost cell in
   assert (current_cost < max_int);
@@ -1099,10 +1152,6 @@ end = struct
     else
       [source]
 end
-
-type derivation_kind = Ocamlformat.source_kind =
-  | Impl
-  | Intf
 
 let derivation_kind der =
   let entrypoint = entrypoint_of_derivation der in
@@ -1748,36 +1797,63 @@ let check_mode () =
     outputs := []
   in
   let derivations = Array.of_seq derivations in
+  let source_printer =
+    Source_printer.make ~with_padding:true ~with_comments:!opt_comments ()
+  in
   let sources =
-    let printer = Source_printer.make ~with_padding:true ~with_comments:!opt_comments () in
-    Array.map (prepare_derivation_for_check printer) derivations
+    Array.map (prepare_derivation_for_check source_printer) derivations
+  in
+  let prepare_errors i errors =
+    let source_kind, locations, _ = sources.(i) in
+    let errors =
+      List.map begin fun error ->
+        let kind, position = match error.Ocamlformat.location with
+          | None -> (Internal_error, -1)
+          | Some loc ->
+            Source_printer.classify_error_location locations loc
+        in
+        (kind, position, error)
+      end errors
+    in
+    (source_kind, errors)
   in
   let outcome =
     Array.to_seq sources
     |> Seq.map (fun (k,_,s)  -> (k, s))
-    |> Ocamlformat.check
-      ~ocamlformat_command:!opt_ocamlformat
-      ~jobs:(Int.max 0 !opt_jobs)
-      ~batch_size:(Int.max 1 !opt_batch_size)
-      ?debug_line:(if !opt_debug_log_output then
-                     Some prerr_endline
-                   else None)
-    |> Seq.mapi begin fun i errors ->
-      let source_kind, locations, _ = sources.(i) in
-      let errors =
-        List.map begin fun error ->
-          let kind, position = match error.Ocamlformat.location with
-            | None -> (Internal_error, -1)
-            | Some loc ->
-              Source_printer.classify_error_location locations loc
-          in
-          (kind, position, error)
-        end errors
-      in
-      (source_kind, errors)
-    end
+    |> ocamlformat_check
+    |> Seq.mapi prepare_errors
     |> Array.of_seq
   in
+  if !opt_reduce then begin
+    let to_check = ref [] in
+    for i = 0 to Array.length outcome - 1 do
+      let _, errors = outcome.(i) in
+      if not (List.is_empty errors) then begin
+        let der = derivations.(i) in
+        let der' = reduce_with_ocamlformat der
+            ~print:(fun der ->
+                let kind, _, source =
+                  prepare_derivation_for_check source_printer der
+                in
+                (kind, source)
+              )
+        in
+        if der <> der' then (
+          derivations.(i) <- der';
+          sources.(i) <- prepare_derivation_for_check source_printer der';
+          push to_check i;
+        )
+      end
+    done;
+    let to_check = List.to_seq !to_check in
+    let errors =
+      to_check
+      |> Seq.map (fun i -> let kind, _, text = sources.(i) in (kind, text))
+      |> ocamlformat_check
+    in
+    Seq.iter2 (fun i errors -> outcome.(i) <- prepare_errors i errors)
+      to_check errors
+  end;
   (* Report all errors *)
   report_errors (get_output !opt_save_report) derivations outcome;
   (* Summarize results *)
