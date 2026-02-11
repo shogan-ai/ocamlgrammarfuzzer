@@ -16,6 +16,7 @@ open Grammarfuzzer
 let opt_count = ref 0
 let opt_length = ref 100
 let opt_comments = ref false
+let opt_comments_randomize_whitespace = ref false
 let opt_seed = ref (-1)
 let opt_oxcaml = ref false
 let opt_lr1 = ref false
@@ -71,6 +72,7 @@ let spec_list = [
   ("--cmly", Arg.Set_string opt_cmly, "<path.cmly> Use grammar from the specified cmly file instead of builtin O(x)Caml grammar");
   (* Printer configuration *)
   ("--comments" , Arg.Set opt_comments , " Generate fake comments in the lines");
+  ("--comments-randomize" , Arg.Set opt_comments_randomize_whitespace, " Randomize whitespace around comments");
   ("--print-entrypoint", Arg.Set opt_print_entrypoint, " Prefix every sentence by the entrypoint followed by ':'");
   ("--terminal", Arg.String add_terminal, " Specify how a terminal should be printed; pass '--terminal INT=42' to print INT as '42'");
   (* Ocamlformat invocation setting *)
@@ -114,9 +116,13 @@ let () =
       raise (Arg.Bad (Printf.sprintf "Unexpected argument %S" unexpected))
     ) usage_msg
 
-let () = match !opt_seed with
-  | -1 -> Random.self_init ()
-  |  n -> Random.init n
+let opt_seed = match !opt_seed with
+  | -1 ->
+    Random.self_init ();
+    Random.bits ()
+  | n ->
+    Random.init n;
+    n
 
 (* Load and preprocess the grammar *)
 
@@ -945,6 +951,7 @@ type error_kind =
 module Source_printer : sig
   type t
   val make : with_padding:bool -> with_comments:bool -> unit -> t
+  val randomize_comments : t -> seed:int -> unit
   val add_terminal : gensym:(unit -> int) -> t -> g terminal index -> unit
 
   type source = string
@@ -963,6 +970,7 @@ end = struct
   type t = {
     buffer: Buffer.t;
     with_padding: bool;
+    mutable randomize_comments: (int * Random.State.t) option;
     mutable comments: int;
     mutable token_locations: location list;
     mutable comment_locations: location list;
@@ -971,6 +979,7 @@ end = struct
   let make ~with_padding ~with_comments () = {
     comments = if with_comments then 0 else (-1);
     with_padding;
+    randomize_comments = None;
     buffer = Buffer.create 63;
     token_locations = [];
     comment_locations = [];
@@ -989,13 +998,38 @@ end = struct
 
   let endp t = Buffer.length t.buffer
 
+  let randomize_comments t ~seed =
+    t.randomize_comments <- Some (0, Random.State.make [|opt_seed;seed|])
+
+  let randomize_comment t =
+    match t.randomize_comments with
+    | None -> ("", "")
+    | Some (indent, rng) ->
+      match Random.State.int rng 10 with
+      | 9 ->
+        (* Special case: newlines and indentation *)
+        let indent = indent + 1 in
+        t.randomize_comments <- Some (indent, rng);
+        ("\n","\n" ^ String.make indent ' ')
+      | n ->
+        let newlines = function
+          | 0 -> ""
+          | 1 -> "\n"
+          | 2 -> "\n\n"
+          | _ -> assert false
+        in
+        let before = newlines (n mod 3) in
+        let after = newlines (n / 3) in
+        (before, after)
+
   let add_comment kind t =
     match kind, t.comments with
     | `Regular, -1 | `Suffix, _  -> ()
     | `Regular, number ->
       t.comments <- number + 1;
       let startp = startp kind t in
-      Printf.bprintf t.buffer "(* C%d *)" number;
+      let before, after = randomize_comment t in
+      Printf.bprintf t.buffer "%s(* C%d *)%s" before number after;
       let endp = endp t in
       t.comment_locations <- (startp, endp) :: t.comment_locations
 
@@ -1166,7 +1200,12 @@ let derivation_kind der =
         name;
     Ocamlformat.Impl
 
-let prepare_derivation_for_check printer der =
+let randomize_printer printer index =
+  if !opt_comments_randomize_whitespace then
+    Source_printer.randomize_comments printer ~seed:index
+
+let prepare_derivation_for_check printer index der =
+  randomize_printer printer index;
   Derivation.iter_terminals der ~f:(Source_printer.add_terminal printer ~gensym:(gensym()));
   let locations, source = Source_printer.flush printer in
   (derivation_kind der, locations, source)
@@ -1497,7 +1536,7 @@ let print_mode () =
   let printer =
     Source_printer.make ~with_padding:false ~with_comments:!opt_comments ()
   in
-  Seq.iter begin fun der ->
+  Seq.iteri begin fun index der ->
     if !opt_print_entrypoint then (
       let entrypoint =
         match der.Derivation.desc with
@@ -1513,6 +1552,7 @@ let print_mode () =
       output_string stdout (Nonterminal.to_string grammar entrypoint);
       output_string stdout ": ";
     );
+    randomize_printer printer index;
     Derivation.iter_terminals ~f:(Source_printer.add_terminal ~gensym:(gensym()) printer) der;
     Source_printer.flush_only_source_to_channel printer stdout;
     output_char stdout '\n'
@@ -1675,6 +1715,7 @@ let track_regressions path_from path_to path_report sources derivations outcome 
                 result := false;
                 if !reported < !opt_max_errors_report then (
                   print_string "Regression: ";
+                  randomize_printer printer index;
                   Derivation.iter_terminals derivations.(index)
                     ~f:(Source_printer.add_terminal ~gensym:(gensym()) printer);
                   Source_printer.flush_only_source_to_channel printer stdout;
@@ -1801,7 +1842,7 @@ let check_mode () =
     Source_printer.make ~with_padding:true ~with_comments:!opt_comments ()
   in
   let sources =
-    Array.map (prepare_derivation_for_check source_printer) derivations
+    Array.mapi (prepare_derivation_for_check source_printer) derivations
   in
   let prepare_errors i errors =
     let source_kind, locations, _ = sources.(i) in
@@ -1833,14 +1874,14 @@ let check_mode () =
         let der' = reduce_with_ocamlformat der
             ~print:(fun der ->
                 let kind, _, source =
-                  prepare_derivation_for_check source_printer der
+                  prepare_derivation_for_check source_printer i der
                 in
                 (kind, source)
               )
         in
         if der <> der' then (
           derivations.(i) <- der';
-          sources.(i) <- prepare_derivation_for_check source_printer der';
+          sources.(i) <- prepare_derivation_for_check source_printer i der';
           push to_check i;
         )
       end
