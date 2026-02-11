@@ -159,8 +159,8 @@ let items_of_expansion g ~expansion ~reduction =
 open Utils
 
 let tilde = Derivation_printer.node "~" []
-let lbra = Derivation_printer.node "[" [] 
-let rbra = Derivation_printer.node "]" [] 
+let lbra = Derivation_printer.node "[" []
+let rbra = Derivation_printer.node "]" []
 
 let rec print acc g der =
   match der.desc with
