@@ -588,8 +588,13 @@ module Item = struct
   let of_int g i = Index.of_int (cardinal g) i
 
   let make g prod pos =
-    if pos < 0 || pos > Production.length g prod then
-      invalid_arg "Info.Item.make: pos out of bounds";
+    if pos < 0 || pos > Production.length g prod then (
+      Printf.ksprintf invalid_arg
+        "Info.Item.make: pos %d out of bounds in %s: %s"
+        pos (Nonterminal.to_string g (Production.lhs g prod))
+        (string_concat_map " " (Symbol.name g)
+           (Array.to_list (Production.rhs g prod)))
+    );
     Index.of_int (cardinal g) (g.item_offsets.:(prod) + pos)
 
   let last g prod =
