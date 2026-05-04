@@ -27,6 +27,7 @@ let opt_avoid = ref ["error"]
 let opt_focus = ref []
 let opt_exhaust = ref false
 let opt_ocamlformat_check = ref false
+let opt_treesitter_check = ref false
 let opt_ocamlformat = ref "ocamlformat"
 let opt_max_errors_report = ref 20
 let opt_jobs = ref 8
@@ -80,6 +81,7 @@ let spec_list = [
   ("--batch-size", Arg.Set_int opt_batch_size, "<int> Number of files to submit to each ocamlformat process (default: 400)");
   (* Check mode *)
   ("--ocamlformat-check"        , Arg.Set opt_ocamlformat_check, " Check mode: check generated sentences with ocamlformat (default is to print them)");
+  ("--tree-sitter-check"        , Arg.Set opt_treesitter_check, " Check mode: check generated sentences with tree-sitter");
   ("--save-report-to"           , Arg.Set_string opt_save_report, "<path> In check mode, classify and report detected problems to a file (default to stdout)");
   ("--max-report"               , Arg.Set_int opt_max_errors_report, "<int> Maximum number of derivations to report per error (default: 20)");
   ("--save-successful-to"       , Arg.Set_string opt_save_successful, "<path> In check mode, save successful sentences to a file");
@@ -508,14 +510,24 @@ let min_sentence =
   fun cell -> Lazy.force solve cell
 
 let ocamlformat_check inputs =
-  Ocamlformat.check
-    ~ocamlformat_command:!opt_ocamlformat
-    ~jobs:(Int.max 0 !opt_jobs)
-    ~batch_size:(Int.max 1 !opt_batch_size)
-    ?debug_line:(if !opt_debug_log_output then
-                   Some prerr_endline
-                 else None)
-    inputs
+  if !opt_ocamlformat_check then
+    Ocamlformat.check
+      ~ocamlformat_command:!opt_ocamlformat
+      ~jobs:(Int.max 0 !opt_jobs)
+      ~batch_size:(Int.max 1 !opt_batch_size)
+      ?debug_line:(if !opt_debug_log_output then
+        Some prerr_endline
+      else None)
+      inputs
+  else
+    Treesitter.check
+      (*~ocamlformat_command:!opt_ocamlformat*)
+      ~jobs:(Int.max 0 !opt_jobs)
+      ~batch_size:(Int.max 1 !opt_batch_size)
+      ?debug_line:(if !opt_debug_log_output then
+        Some prerr_endline
+      else None)
+      inputs
 
 let rec simple_reducer test (der : (g, Reach.r, Reach.Cell.n index) Derivation.t) =
   match der.desc with
@@ -1341,7 +1353,8 @@ let report_located_errors ?(filter=fun _ -> true) oc derivations outcome =
     | [] -> ()
     | group ->
       Printf.fprintf oc "# %s\n\n" title;
-      header ();
+      if !opt_ocamlformat_check then
+        header ();
       Printf.fprintf oc "\n\n";
       List.iter begin fun (message, errors) ->
         Printf.fprintf oc "## %s\n" message;
@@ -1839,7 +1852,7 @@ let check_mode () =
   in
   let derivations = Array.of_seq derivations in
   let source_printer =
-    Source_printer.make ~with_padding:true ~with_comments:!opt_comments ()
+    Source_printer.make ~with_padding:!opt_ocamlformat_check ~with_comments:!opt_comments ()
   in
   let sources =
     Array.mapi (prepare_derivation_for_check source_printer) derivations
@@ -1987,7 +2000,10 @@ let check_mode () =
 
 
 let () =
-  if !opt_ocamlformat_check then
+  if !opt_ocamlformat_check && !opt_treesitter_check then (
+    Printf.eprintf "Cannot have --ocamlformat-check and --tree-sitter-check at the same time\n";
+    exit 1
+  ) else if !opt_ocamlformat_check || !opt_treesitter_check then
     check_mode ()
   else
     print_mode ()
