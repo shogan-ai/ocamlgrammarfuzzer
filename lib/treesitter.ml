@@ -59,7 +59,7 @@ let unlink_no_err path =
 
 module Output_parser = struct
 
-  let re_error = Str.regexp "(\\(.+\\) *\\[\\([0-9]+\\), *\\([0-9]+\\)\\] *- *\\[\\([0-9]+\\), *\\([0-9]+\\)\\])";;
+  let re_error = Str.regexp "(\\(.+\\) +\\[\\([0-9]+\\), *\\([0-9]+\\)\\] *- *\\[\\([0-9]+\\), *\\([0-9]+\\)\\])";;
   let extract_error s =
     if Str.string_match re_error s 0 then
       Some (Str.matched_group 1 s,

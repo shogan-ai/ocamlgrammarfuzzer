@@ -1353,9 +1353,10 @@ let report_located_errors ?(filter=fun _ -> true) oc derivations outcome =
     | [] -> ()
     | group ->
       Printf.fprintf oc "# %s\n\n" title;
-      if !opt_ocamlformat_check then
+      if !opt_ocamlformat_check then (
         header ();
-      Printf.fprintf oc "\n\n";
+        Printf.fprintf oc "\n\n";
+      );
       List.iter begin fun (message, errors) ->
         Printf.fprintf oc "## %s\n" message;
         List.iter begin fun (item, errors) ->
@@ -1526,7 +1527,10 @@ let report_non_located_errors ?(filter=fun _ -> true) oc derivations outcome kin
   in
   let heap = Occurrence_heap.make (Item.cardinal grammar) in
   Array.iteri begin fun i (message, _, errors) ->
-    if i = 0 then header oc;
+    if i = 0 && !opt_ocamlformat_check then (
+      header oc;
+      Printf.fprintf oc "\n\n";
+    );
     Printf.fprintf oc "## %s (%d error%s)\n" message (List.length errors) (plural errors);
     (* Errors by most frequent items *)
     List.iter
@@ -1579,7 +1583,7 @@ let internal_error_header oc =
     "When OCamlformat fails with an internal error, the exact location of \
      the problem cannot be determined.\n\
      The location is guessed by examining the syntactic constructions \
-     that appear most frequently in the failing code.\n\n"
+     that appear most frequently in the failing code."
 
 let red_herring_header oc =
   Printf.fprintf oc "# Red herrings\n\n";
@@ -1591,7 +1595,7 @@ let red_herring_header oc =
      Note that, as with internal errors, the exact location of the problem \
      cannot be determined.\n\
      The location is guessed by inspecting the syntactic constructions that appear \
-     most frequently in the failing code.\n\n"
+     most frequently in the failing code."
 
 type stats = {
   valid: int;
