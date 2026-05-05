@@ -116,29 +116,29 @@ module Output_parser = struct
     trailer ();
     errors
 
-  let forward_lines text pos lines =
+  let seek_pos text pos lines col =
+    let rpos = ref pos in
+    let rlines = ref lines in
     try
-      let rpos = ref pos in
-      for _ = 1 to lines do
+      while !rlines > 0 do
         rpos := String.index_from text !rpos '\n' + 1;
+        decr rlines
       done;
       !rpos
     with Not_found ->
       let len = String.length text in
-      Printf.eprintf "cannot find line %d in %S\n" lines
-        (String.sub text pos (len - pos));
+      if not (!rlines = 1 && col = 0) then
+        Printf.eprintf "cannot find line %d in %S\n" lines
+          (String.sub text pos (len - pos));
       len
-
-
 
   let locate_error contents (message, start_line, start_col, end_line, end_col) =
     let end_col =
       if start_line = end_line then
         end_col
       else
-        let start_ofs = forward_lines contents 0 start_line in
-        let end_ofs = forward_lines contents start_ofs (end_line - start_line) in
-        (end_ofs - start_ofs) + end_col
+        let start_ofs = seek_pos contents 0 start_line 0 in
+        seek_pos contents start_ofs (end_line - start_line) end_col - start_ofs
     in
     {message; location = Some {line = start_line + 1; start_col; end_col}}
 end
