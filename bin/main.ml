@@ -17,6 +17,8 @@ let opt_count = ref 0
 let opt_length = ref 100
 let opt_comments = ref false
 let opt_comments_randomize_whitespace = ref false
+let opt_comments_randomize_count = ref false
+let opt_comments_randomize_length = ref false
 let opt_seed = ref (-1)
 let opt_oxcaml = ref false
 let opt_lr1 = ref false
@@ -74,7 +76,9 @@ let spec_list = [
   ("--cmly", Arg.Set_string opt_cmly, "<path.cmly> Use grammar from the specified cmly file instead of builtin O(x)Caml grammar");
   (* Printer configuration *)
   ("--comments" , Arg.Set opt_comments , " Generate fake comments in the lines");
-  ("--comments-randomize" , Arg.Set opt_comments_randomize_whitespace, " Randomize whitespace around comments");
+  ("--comments-randomize-space" , Arg.Set opt_comments_randomize_whitespace, " Randomize whitespace around comments");
+  ("--comments-randomize-count" , Arg.Set opt_comments_randomize_count, " Randomize number of comments");
+  ("--comments-randomize-length" , Arg.Set opt_comments_randomize_count, " Randomize length of comments");
   ("--print-entrypoint", Arg.Set opt_print_entrypoint, " Prefix every sentence by the entrypoint followed by ':'");
   ("--terminal", Arg.String add_terminal, " Specify how a terminal should be printed; pass '--terminal INT=42' to print INT as '42'");
   (* Ocamlformat invocation setting *)
@@ -1024,6 +1028,12 @@ end = struct
   let randomize_comments t ~seed =
     t.randomize_comments <- Some (0, Random.State.make [|opt_seed;seed|])
 
+  let randomize_count t =
+    match t.randomize_comments with
+    | Some (_, rng) when !opt_comments_randomize_count ->
+      Random.State.int rng 4
+    | _ -> 1
+
   let randomize_comment t =
     match t.randomize_comments with
     | None -> ("", "")
@@ -1045,16 +1055,32 @@ end = struct
         let after = newlines (n / 3) in
         (before, after)
 
+  let spacer = String.make 40 '-'
+
+  let randomize_length buf t =
+    Buffer.add_char buf ' ';
+    match t.randomize_comments with
+    | Some (_, rng) when !opt_comments_randomize_length ->
+      let n = Random.State.int rng 40 in
+      if n > 0 then (
+        Buffer.add_substring buf spacer 0 n;
+        Buffer.add_char buf ' ';
+      )
+    | _ -> ()
+
+
   let add_comment kind t =
     match kind, t.comments with
     | `Regular, -1 | `Suffix, _  -> ()
     | `Regular, number ->
-      t.comments <- number + 1;
-      let startp = startp kind t in
-      let before, after = randomize_comment t in
-      Printf.bprintf t.buffer "%s(* C%d *)%s" before number after;
-      let endp = endp t in
-      t.comment_locations <- (startp, endp) :: t.comment_locations
+      for _ = 1 to randomize_count t do
+        t.comments <- number + 1;
+        let startp = startp kind t in
+        let before, after = randomize_comment t in
+        Printf.bprintf t.buffer "%s(*%aC%d%a*)%s" before randomize_length t number randomize_length t after;
+        let endp = endp t in
+        t.comment_locations <- (startp, endp) :: t.comment_locations
+      done
 
   let add_terminal ~gensym t term =
     let printer, kind = terminal_text.:(term) in
