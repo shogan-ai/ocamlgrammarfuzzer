@@ -104,14 +104,14 @@ let extract n seq =
       x
   in
   (arr, !seq)
-  
+
 let get_errors seq =
-  let ocamlformat_command = !opt_ocamlformat in
+  let command = !opt_ocamlformat in
   let jobs = Int.max 0 !opt_jobs in
   let batch_size = Int.max 1 !opt_batch_size in
   let debug_line = if !opt_raw_output then prerr_endline else ignore in
   if not !opt_debug_idempotence then
-    Ocamlformat.check seq ~ocamlformat_command ~jobs ~batch_size ~debug_line
+    Ocamlformat.check seq ~command ~jobs ~batch_size ~debug_line
   else
     let duplicates = 3 in
     let arr0 = Array.of_seq (Seq.mapi (fun i x -> (i, x)) seq) in
@@ -124,11 +124,11 @@ let get_errors seq =
       ))
     in
     let inputs = Array.to_seq arr in
-    let results = 
-      Ocamlformat.format ~ocamlformat_command ~jobs ~batch_size ~debug_line
+    let results =
+      Ocamlformat.format ~command ~jobs ~batch_size ~debug_line
         (Seq.map snd inputs)
     in
-    let reference, results = extract n results in 
+    let reference, results = extract n results in
     let inputs = Seq.drop n inputs in
     Seq.iter2 begin fun (i, (_, input)) (formatted, errors) ->
       let formatted', errors' = reference.(i) in
@@ -139,7 +139,7 @@ let get_errors seq =
     end inputs results;
     (* Drop formatting *)
     Seq.map snd (Array.to_seq reference)
-  
+
 let () =
   if !opt_debug_idempotence then
     Random.self_init ()

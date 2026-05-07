@@ -25,7 +25,7 @@ type source_kind =
   | Intf
 
 val check :
-  ?ocamlformat_command:string ->
+  ?command:string ->
   ?jobs:int ->
   ?batch_size:int ->
   ?debug_line:(string -> unit) ->
@@ -33,7 +33,7 @@ val check :
   error list Seq.t
 
 val format :
-  ?ocamlformat_command:string ->
+  ?command:string ->
   ?jobs:int ->
   ?batch_size:int ->
   ?debug_line:(string -> unit) ->

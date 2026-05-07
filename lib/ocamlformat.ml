@@ -75,7 +75,7 @@ end = struct
   let get = function
     | None -> raise End_of_file
     | Some text -> text
-      
+
   let peek_exn t = get t.line
 
   let pop_exn t = get (pop t)
@@ -278,7 +278,7 @@ type source_kind =
   | Impl
   | Intf
 
-let start_batch ?debug_line ~ocamlformat_command ~args = function
+let start_batch ?debug_line ~command ~args = function
   | [] -> None
   | inputs ->
     let id = !batch_ids in
@@ -299,8 +299,8 @@ let start_batch ?debug_line ~ocamlformat_command ~args = function
     in
     let process =
       Unix.open_process_args_full
-        ocamlformat_command
-        (Array.of_list (ocamlformat_command :: args @ files))
+        command
+        (Array.of_list (command :: args @ files))
         (Lazy.force environ)
     in
     Some (files, process)
@@ -364,7 +364,7 @@ let overlapping_force jobs seq =
   reconstruct queue seq
 
 let check
-    ?(ocamlformat_command="ocamlformat")
+    ?(command="ocamlformat")
     ?(jobs=0) ?(batch_size=default_batch_size)
     ?debug_line
     seq
@@ -373,7 +373,7 @@ let check
   |> (* Group by batches of appropriate size *)
   batch_by ~size:batch_size
   |> (* Launch a process for each batch *)
-  Seq.map (start_batch ?debug_line ~ocamlformat_command
+  Seq.map (start_batch ?debug_line ~command
              ~args:["--check"; "--enable-outside-detected-project"])
   |> (* Force sequence enough items ahead to kick [jobs] processes ahead *)
   overlapping_force jobs
@@ -383,7 +383,7 @@ let check
                     ~pack:(fun () errors -> errors))
 
 let format
-    ?(ocamlformat_command="ocamlformat")
+    ?(command="ocamlformat")
     ?(jobs=0) ?(batch_size=default_batch_size)
     ?debug_line
     seq
@@ -400,7 +400,7 @@ let format
   |> (* Group by batches of appropriate size *)
   batch_by ~size:batch_size
   |> (* Launch a process for each batch *)
-  Seq.map (start_batch ?debug_line ~ocamlformat_command
+  Seq.map (start_batch ?debug_line ~command
              ~args:["--inplace"; "--enable-outside-detected-project"])
   |> (* Force sequence enough items ahead to kick [jobs] processes ahead *)
   overlapping_force jobs

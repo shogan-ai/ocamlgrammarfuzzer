@@ -26,7 +26,7 @@ let environ = lazy (Unix.environment ())
 
 let batch_ids = ref 0
 
-let start_batch ?debug_line ~treesitter_command ~args = function
+let start_batch ?debug_line ~command ~args = function
   | [] -> None
   | inputs ->
     let id = !batch_ids in
@@ -47,8 +47,8 @@ let start_batch ?debug_line ~treesitter_command ~args = function
     in
     let process =
       Unix.open_process_args_full
-        treesitter_command
-        (Array.of_list (treesitter_command :: args @ files))
+        command
+        (Array.of_list (command :: args @ files))
         (Lazy.force environ)
     in
     Some (files, inputs, process)
@@ -213,7 +213,7 @@ let overlapping_force jobs seq =
   reconstruct queue seq
 
 let check
-    ?(treesitter_command="tree-sitter")
+    ?(command="tree-sitter")
     ?(jobs=0) ?(batch_size=default_batch_size)
     ?debug_line
     seq
@@ -222,7 +222,7 @@ let check
   |> (* Group by batches of appropriate size *)
   batch_by ~size:batch_size
   |> (* Launch a process for each batch *)
-  Seq.map (start_batch ?debug_line ~treesitter_command
+  Seq.map (start_batch ?debug_line ~command
              ~args:["parse"; "-q"; "--stat"])
   |> (* Force sequence enough items ahead to kick [jobs] processes ahead *)
   overlapping_force jobs

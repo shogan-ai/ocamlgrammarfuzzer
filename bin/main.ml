@@ -28,10 +28,8 @@ let opt_weights = ref []
 let opt_avoid = ref ["error"]
 let opt_focus = ref []
 let opt_exhaust = ref false
-let opt_ocamlformat_check = ref false
-let opt_treesitter_check = ref false
-let opt_stylo_check = ref false
-let opt_ocamlformat = ref None
+let opt_check = ref `None
+let opt_check_command = ref None
 let opt_max_errors_report = ref 20
 let opt_jobs = ref 8
 let opt_batch_size = ref 400
@@ -60,6 +58,13 @@ let add_terminal str =
   | [key; value] -> push opt_terminals (key, value)
   | _ -> raise (Arg.Bad "Terminals should be specified using <name>=<text> syntax")
 
+let set_check = function
+  | "stylo" -> opt_check := `Stylo
+  | "ocamlformat" -> opt_check := `Stylo
+  | "tree-sitter" -> opt_check := `Stylo
+  | other ->
+    raise (Arg.Bad (Printf.sprintf "unknown checker %S, valid values are stylo, ocamlformat or tree-sitter" other))
+
 let spec_list = [
   (* Controlling generation *)
   ("--count"    , Arg.Set_int opt_count, "<int> Number of lines to generate"  );
@@ -70,7 +75,6 @@ let spec_list = [
   ("--avoid", Arg.String (push opt_avoid), "<pattern> Forbid grammatical constructions");
   ("--focus", Arg.String (push opt_focus), "<pattern> Generate sentences stressing specific grammatical constructions");
   ("--exhaust", Arg.Set opt_exhaust, " Exhaust mode generates a deterministic set of sentences that cover all reachable constructions");
-  ("--ocamlformat", Arg.String (fun s -> opt_ocamlformat := Some s), "<path> OCamlformat command to use");
   ("--oxcaml"   , Arg.Set opt_oxcaml, " Work with Oxcaml dialect");
   ("--lr1"   , Arg.Set opt_lr1, " When using a builtin grammar (ocaml or --oxcaml), use LR(1) instead of LALR(1) automaton");
   ("--cmly", Arg.Set_string opt_cmly, "<path.cmly> Use grammar from the specified cmly file instead of builtin O(x)Caml grammar");
@@ -85,9 +89,8 @@ let spec_list = [
   ("--jobs", Arg.Set_int opt_jobs, "<int> Number of ocamlformat processes to run in parallel (default: 8)");
   ("--batch-size", Arg.Set_int opt_batch_size, "<int> Number of files to submit to each ocamlformat process (default: 400)");
   (* Check mode *)
-  ("--ocamlformat-check"        , Arg.Set opt_ocamlformat_check, " Check mode: check generated sentences with ocamlformat (default is to print them)");
-  ("--tree-sitter-check"        , Arg.Set opt_treesitter_check, " Check mode: check generated sentences with tree-sitter");
-  ("--stylo-check"              , Arg.Set opt_stylo_check, " Check mode: check generated sentences with stylo");
+  ("--check"                    , Arg.String set_check, "<ocamlformat|stylo|tree-sitter> Check mode: submit generated sentences to a formatter");
+  ("--check-command"            , Arg.String (fun s -> opt_check_command := Some s), "<path> Formatter binary to fuzz (default: ocamlformat, tree-sitter or stylo)");
   ("--save-report-to"           , Arg.Set_string opt_save_report, "<path> In check mode, classify and report detected problems to a file (default to stdout)");
   ("--max-report"               , Arg.Set_int opt_max_errors_report, "<int> Maximum number of derivations to report per error (default: 20)");
   ("--save-successful-to"       , Arg.Set_string opt_save_successful, "<path> In check mode, save successful sentences to a file");
@@ -516,33 +519,35 @@ let min_sentence =
   fun cell -> Lazy.force solve cell
 
 let ocamlformat_check inputs =
-  if !opt_ocamlformat_check then
+  match !opt_check with
+  | `OCamlformat ->
     Ocamlformat.check
-      ?ocamlformat_command:!opt_ocamlformat
+      ?command:!opt_check_command
       ~jobs:(Int.max 0 !opt_jobs)
       ~batch_size:(Int.max 1 !opt_batch_size)
       ?debug_line:(if !opt_debug_log_output then
         Some prerr_endline
       else None)
       inputs
-  else if !opt_treesitter_check then
+  | `Treesitter ->
     Treesitter.check
-      (*~ocamlformat_command:!opt_ocamlformat*)
+      ?command:!opt_check_command
       ~jobs:(Int.max 0 !opt_jobs)
       ~batch_size:(Int.max 1 !opt_batch_size)
       ?debug_line:(if !opt_debug_log_output then
         Some prerr_endline
       else None)
       inputs
-  else
+  | `Stylo ->
     Stylo.check
-      ?stylo_command:!opt_ocamlformat
+      ?command:!opt_check_command
       ~jobs:(Int.max 0 !opt_jobs)
       ~batch_size:(Int.max 1 !opt_batch_size)
       ?debug_line:(if !opt_debug_log_output then
         Some prerr_endline
       else None)
       inputs
+  | `None -> assert false
 
 let rec simple_reducer test (der : (g, Reach.r, Reach.Cell.n index) Derivation.t) =
   match der.desc with
@@ -1390,10 +1395,12 @@ let report_located_errors ?(filter=fun _ -> true) oc derivations outcome =
     | [] -> ()
     | group ->
       Printf.fprintf oc "# %s\n\n" title;
-      if !opt_ocamlformat_check then (
-        header ();
-        Printf.fprintf oc "\n\n";
-      );
+      begin match !opt_check with
+        | `OCamlformat ->
+          header ();
+          Printf.fprintf oc "\n\n";
+        |_ -> ()
+      end;
       List.iter begin fun (message, errors) ->
         Printf.fprintf oc "## %s\n" message;
         List.iter begin fun (item, errors) ->
@@ -1564,7 +1571,7 @@ let report_non_located_errors ?(filter=fun _ -> true) oc derivations outcome kin
   in
   let heap = Occurrence_heap.make (Item.cardinal grammar) in
   Array.iteri begin fun i (message, _, errors) ->
-    if i = 0 && !opt_ocamlformat_check then (
+    if i = 0 && !opt_check = `OCamlformat then (
       header oc;
       Printf.fprintf oc "\n\n";
     );
@@ -1893,7 +1900,7 @@ let check_mode () =
   in
   let derivations = Array.of_seq derivations in
   let source_printer =
-    Source_printer.make ~with_padding:!opt_ocamlformat_check ~with_comments:!opt_comments ()
+    Source_printer.make ~with_padding:(!opt_check = `OCamlformat) ~with_comments:!opt_comments ()
   in
   let sources =
     Array.mapi (prepare_derivation_for_check source_printer) derivations
@@ -2039,16 +2046,7 @@ let check_mode () =
   else
     exit 1
 
-
 let () =
-  if (!opt_ocamlformat_check && !opt_treesitter_check) ||
-     (!opt_ocamlformat_check && !opt_stylo_check) ||
-     (!opt_treesitter_check && !opt_stylo_check)
-  then (
-    Printf.eprintf "Cannot run multiple checks at the same time\n";
-    exit 1
-  );
-  if !opt_ocamlformat_check || !opt_treesitter_check || !opt_stylo_check then
-    check_mode ()
-  else
-    print_mode ()
+  match !opt_check with
+  | `None -> print_mode ()
+  | _ -> check_mode ()

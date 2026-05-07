@@ -10,7 +10,7 @@
 open Ocamlformat
 
 val check :
-  ?treesitter_command:string ->
+  ?command:string ->
   ?jobs:int ->
   ?batch_size:int ->
   ?debug_line:(string -> unit) ->
