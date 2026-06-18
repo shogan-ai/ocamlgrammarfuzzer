@@ -60,8 +60,8 @@ let add_terminal str =
 
 let set_check = function
   | "stylo" -> opt_check := `Stylo
-  | "ocamlformat" -> opt_check := `Stylo
-  | "tree-sitter" -> opt_check := `Stylo
+  | "ocamlformat" -> opt_check := `OCamlformat
+  | "tree-sitter" -> opt_check := `Treesitter
   | other ->
     raise (Arg.Bad (Printf.sprintf "unknown checker %S, valid values are stylo, ocamlformat or tree-sitter" other))
 
