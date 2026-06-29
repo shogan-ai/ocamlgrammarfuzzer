@@ -262,12 +262,12 @@ let interpreter =
       Derivation_printer.output stdout nodes
     in
     let stack, remaining = loop stack symbols in
-    if List.is_empty remaining then
+    if [] = remaining then
       Printf.printf "Successful parse:\n"
     else
       Printf.printf "Input rejected after reaching:\n";
     print_stack stack;
-    if not (List.is_empty remaining) then
+    if not ([] = remaining) then
       Printf.printf "Remaining symbols: %s\n"
         (string_concat_map ", " (Symbol.name grammar) remaining)
 
@@ -292,7 +292,7 @@ let () =
   | [] -> ()
   | inputs ->
     List.iter parse_sentence inputs;
-    if List.is_empty !opt_focus && not !opt_exhaust && !opt_count = 0 then
+    if [] = !opt_focus && not !opt_exhaust && !opt_count = 0 then
       exit 0
 
 (* Parse weight patterns *)
@@ -579,10 +579,10 @@ let reduce_with_ocamlformat ~print der =
       Printf.eprintf "reducing case %d, attempt %d\n" !reduced !attempts;
       Printf.eprintf "  %s\n" (String.trim source);
     );
-    match ocamlformat_check (Seq.singleton (kind, source)) () with
+    match ocamlformat_check (Seq.return (kind, source)) () with
     | Seq.Cons (l, s') ->
       assert (Seq.is_empty s');
-      not (List.is_empty l)
+      not ([] = l)
     | Seq.Nil ->
       assert false
   in
@@ -612,7 +612,7 @@ let rec fuzz size0 cell =
             if r_cost < max_int && l_cost + r_cost <= size then
               push candidates ((cl, cr), 1.0)
       );
-    if List.is_empty !candidates then
+    if [] = !candidates then
       iter_sub_nodes i_pre i_post l r ~f:(fun cl ->
           let l_cost = Reach.Analysis.cost cl in
           fun cr ->
@@ -814,7 +814,7 @@ let derivations =
   match List.rev !opt_focus with
   | [] when not !opt_exhaust ->
     let count = match !opt_count with
-      | 0 when List.is_empty !opt_print_derivations -> 1
+      | 0 when [] = !opt_print_derivations -> 1
       | n -> n
     in
     Seq.init count (fun _ ->
@@ -918,7 +918,7 @@ let derivations =
       | exception Index.End_of_set -> Seq.Nil
       | cell when Reach.Analysis.cost cell = max_int (* empty language *) ||
                   not (Boolvector.test todo cell) ||
-                  List.is_empty (snd bfs.:(cell)) (* unreachable from entrypoint *)
+                  [] = (snd bfs.:(cell)) (* unreachable from entrypoint *)
         -> next_cell ()
       | cell ->
         let length = ref !opt_length in
@@ -1140,15 +1140,24 @@ end = struct
     reset t
 
   let classify_error_location l {Ocamlformat. line; start_col; end_col; _} =
+    let find_index p a =
+      let open Array in
+      let n = length a in
+      let rec loop i =
+        if i = n then None
+        else if p (unsafe_get a i) then Some i
+        else loop (succ i) in
+      loop 0
+    in
     if line <> 1 then
       (Red_herring, Array.length l.tokens)
     else
       let find_start (startp, endp) = startp <= start_col && start_col < endp in
       let find_end (_, endp) = end_col = endp in
-      match Array.find_index find_start l.tokens with
+      match find_index find_start l.tokens with
       | None ->
         let find_exact (startp, endp) = start_col = startp && endp = end_col in
-        begin match Array.find_index find_exact l.comments with
+        begin match find_index find_exact l.comments with
           | Some i ->
             (* Exact comment match: comment (likely dropped) error *)
             (Comment, i)
@@ -1359,7 +1368,7 @@ let report_located_errors ?(filter=fun _ -> true) oc derivations outcome =
   let all_lexer_errors = ref [] in
   let all_invariant_errors = ref [] in
   let push_non_empty l r v =
-    if not (List.is_empty l) then
+    if not ([] = l) then
       push r v
   in
   Array.iter begin fun (message, _, errors) ->
@@ -1487,7 +1496,7 @@ let report_non_located_errors ?(filter=fun _ -> true) oc derivations outcome kin
 
         let errors = List.filter (fun (k, _, _) -> k = kind) errors in
 
-        (*if List.is_empty errors then (
+        (*if [] = errors then (
           (* There were errors, but none of the kind we were looking for.
              Mark all cells in this derivation as potentially safe *)
           mark_safe potentially_safe_cells derivations.(i);
@@ -1772,7 +1781,7 @@ let track_regressions path_from path_to path_report sources derivations outcome 
               let index = !current_line in
               incr current_line;
               let _, errors = outcome.(index) in
-              if not (List.is_empty errors) then (
+              if not ([] = errors) then (
                 result := false;
                 if !reported < !opt_max_errors_report then (
                   print_string "Regression: ";
@@ -1872,7 +1881,7 @@ let track_regressions path_from path_to path_report sources derivations outcome 
       range_stop := i
     in
     Array.iteri begin fun i (_, errors) ->
-      if not (List.is_empty errors) then
+      if not ([] = errors) then
         add_index i
     end outcome;
     flush_range ();
@@ -1930,7 +1939,7 @@ let check_mode () =
     let to_check = ref [] in
     for i = 0 to Array.length outcome - 1 do
       let _, errors = outcome.(i) in
-      if not (List.is_empty errors) then begin
+      if not ([] = errors) then begin
         let der = derivations.(i) in
         let der' = reduce_with_ocamlformat der
             ~print:(fun der ->
@@ -2021,7 +2030,7 @@ let check_mode () =
     List.exists (fun (kind', _, _) -> kind = kind') errors
   in
   output_sentences !opt_save_successful
-    (List.is_empty);
+    ((=) []);
   output_sentences !opt_save_lexer_errors
     (has_kind Lexer);
   output_sentences !opt_save_parser_errors

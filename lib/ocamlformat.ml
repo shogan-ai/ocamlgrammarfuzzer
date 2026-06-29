@@ -109,49 +109,54 @@ module Output_parser = struct
   let comment_dropped = "Error: comment dropped."
 
   let error_message_1 lr =
-    Scanf.sscanf_opt (Line_reader.peek_exn lr)
-      {|File %S, line %d, characters %d-%d:|}
-      (fun input line start_col end_col ->
-         Line_reader.next lr;
-         let match_terminator text =
-           match Scanf.sscanf_opt text "%d | %s" (fun _ _ -> ()) with
-           | Some _ -> None
-           | None ->
-             let location = {line; start_col; end_col} in
-             match Scanf.sscanf_opt text "Error: comment (*  C%d  *) dropped." (fun _ -> ()) with
-             | Some () -> Some (Some (input, error ~location comment_dropped))
-             | None ->
-               if String.starts_with ~prefix:"Error: " text then (
-                 let rec pump acc =
-                   match Line_reader.peek lr with
-                   | Some next when StringLabels.starts_with ~prefix:"  " next ->
-                     Line_reader.next lr;
-                     pump (next :: acc)
-                   | _ -> String.concat "\n" (List.rev acc)
-                 in
-                 Some (Some (input, error ~location (pump [text])))
-               ) else if String.starts_with ~prefix:"  This "  text then
-                 Some None
-               else
-                 failwithf "Unexpected line %S" text
-         in
-         match match_terminator (Line_reader.pop_exn lr) with
-         | Some result -> result
-         | _ ->
-           let caret = ref false in
-           let pred = function
-             | ' ' -> not !caret
-             | '^' -> caret := true; true
-             | _ -> false
-           in
-           while not (String.for_all pred (Line_reader.pop_exn lr)) do
-             caret := false
-           done;
-           let text = Line_reader.pop_exn lr in
-           match match_terminator text with
-           | None -> failwithf "Unexpected line %S (looking for error terminator)" text
-           | Some result -> result
+    try
+      Some (
+        Scanf.sscanf (Line_reader.peek_exn lr)
+          {|File %S, line %d, characters %d-%d:|}
+          (fun input line start_col end_col ->
+             Line_reader.next lr;
+             let match_terminator text =
+               match Scanf.sscanf text "%d | %s" (fun _ _ -> ()) with
+               | _ -> None
+               | exception (Scanf.Scan_failure _ | Failure _ | End_of_file) ->
+                 let location = {line; start_col; end_col} in
+                 match Scanf.sscanf text "Error: comment (*  C%d  *) dropped." (fun _ -> ()) with
+                 | () -> Some (Some (input, error ~location comment_dropped))
+                 | exception (Scanf.Scan_failure _ | Failure _ | End_of_file) ->
+                   if String.starts_with ~prefix:"Error: " text then (
+                     let rec pump acc =
+                       match Line_reader.peek lr with
+                       | Some next when StringLabels.starts_with ~prefix:"  " next ->
+                         Line_reader.next lr;
+                         pump (next :: acc)
+                       | _ -> String.concat "\n" (List.rev acc)
+                     in
+                     Some (Some (input, error ~location (pump [text])))
+                   ) else if String.starts_with ~prefix:"  This "  text then
+                     Some None
+                   else
+                     failwithf "Unexpected line %S" text
+             in
+             match match_terminator (Line_reader.pop_exn lr) with
+             | Some result -> result
+             | _ ->
+               let caret = ref false in
+               let pred = function
+                 | ' ' -> not !caret
+                 | '^' -> caret := true; true
+                 | _ -> false
+               in
+               while not (String.for_all pred (Line_reader.pop_exn lr)) do
+                 caret := false
+               done;
+               let text = Line_reader.pop_exn lr in
+               match match_terminator text with
+               | None -> failwithf "Unexpected line %S (looking for error terminator)" text
+               | Some result -> result
+          )
       )
+    with Scanf.Scan_failure _ | Failure _ | End_of_file ->
+      None
 
   (* Error message shape 2:
 
@@ -159,9 +164,14 @@ module Output_parser = struct
   *)
 
   let error_message_2 lr =
-    Scanf.sscanf_opt (Line_reader.peek_exn lr)
-      {|%s@: ignoring %S (syntax error)|}
-      (fun _ocamlformat path -> path)
+    try
+      Some (
+        Scanf.sscanf (Line_reader.peek_exn lr)
+          {|%s@: ignoring %S (syntax error)|}
+          (fun _ocamlformat path -> path)
+      )
+    with Scanf.Scan_failure _ | Failure _ | End_of_file ->
+      None
 
   (* Error message shape 3:
 
@@ -174,15 +184,20 @@ module Output_parser = struct
   *)
 
   let error_message_3_part_1 lr =
-    Scanf.sscanf_opt (Line_reader.peek_exn lr)
-      {|%s@: Cannot process %S.|}
-      (fun _ocamlformat input ->
-         Line_reader.next lr;
-         match Line_reader.pop_exn lr with
-         | "  Please report this bug at https://github.com/ocaml-ppx/ocamlformat/issues." ->
-           input
-         | line -> failwithf "driver: %s: unexpected error header: %S" input line
+    try
+      Some (
+        Scanf.sscanf (Line_reader.peek_exn lr)
+          {|%s@: Cannot process %S.|}
+          (fun _ocamlformat input ->
+             Line_reader.next lr;
+             match Line_reader.pop_exn lr with
+             | "  Please report this bug at https://github.com/ocaml-ppx/ocamlformat/issues." ->
+               input
+             | line -> failwithf "driver: %s: unexpected error header: %S" input line
+          )
       )
+    with Scanf.Scan_failure _ | Failure _ | End_of_file ->
+      None
 
   let error_message_3_part_2 lr =
     let text = Line_reader.peek_exn lr in
@@ -268,7 +283,9 @@ let temp_path id i ext =
 
 let temp_path_index name =
   let name = Filename.remove_extension (Filename.basename name) in
-  Scanf.sscanf_opt name "ocamlgrammarfuzzer_%d-%d" (fun _id index -> index)
+  try Some (Scanf.sscanf name "ocamlgrammarfuzzer_%d-%d" (fun _id index -> index))
+  with Scanf.Scan_failure _ | Failure _ | End_of_file ->
+    None
 
 let environ = lazy (Unix.environment ())
 
