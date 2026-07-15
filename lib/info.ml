@@ -578,6 +578,18 @@ module Production = struct
     let open (val g.raw) in
     Production.kind (Production.of_int (Index.to_int i))
   let all g = g.production_all
+
+  let to_string g prod =
+    let b = Buffer.create 63 in
+    Buffer.add_string b (Nonterminal.to_string g (lhs g prod));
+    Buffer.add_char b ':';
+    let rhs = rhs g prod in
+    let add_sym sym =
+      Buffer.add_char b ' ';
+      Buffer.add_string b (Symbol.name g sym);
+    in
+    Array.iter add_sym rhs;
+    Buffer.contents b
 end
 
 (* Explicit representation of LR(0) items *)

@@ -51,96 +51,10 @@ type 'r cell = 'r Cell_cardinal.t
 module Goto_cell_cardinal = Unsafe_cardinal()
 type 'r goto_cell = 'r Goto_cell_cardinal.t
 
-module type S = sig
-  type g
-  type r
-
-  (* [unreduce tr] lists all the reductions that ends up following [tr]. *)
-  val unreduce : g goto_transition index -> g reduction list
-
-  module Classes : sig
-    (* Returns the classes of terminals for a given goto transition *)
-    val for_edge : g goto_transition index -> g terminal indexset array
-
-    (* Returns the classes of terminals for a given LR(1) state *)
-    val for_lr1 : g lr1 index -> g terminal indexset array
-
-    (* Returns the classes of terminals before taking a transition *)
-    val pre_transition : g transition index -> g terminal indexset array
-
-    (* Returns the classes of terminals after taking a transition *)
-    val post_transition : g transition index -> g terminal indexset array
-  end
-
-  module Tree : sig
-    include CARDINAL with type n = r tree_node
-
-    (* Returns the leaf node corresponding to a given transition *)
-    val leaf : g transition index -> n index
-
-    (* Splits a node into its left and right children if it is an inner node *)
-    val split : n index -> (g transition index, n index * n index) either
-
-    (* Returns the nullable terminals and non-nullable equations for a given goto transition *)
-    val goto_equations : g goto_transition index -> (g, n) tree_equations
-
-    (* Returns the pre-classes for a given node *)
-    val pre_classes : n index -> g terminal indexset array
-
-    (* Returns the post-classes for a given node *)
-    val post_classes : n index -> g terminal indexset array
-  end
-
-  (* Identify each cell of compact cost matrices.
-     A [Cell.n index] can be thought of as a triple made of a tree node and two indices
-     (row, col) of the compact cost matrix associated to the node. *)
-  module Cell : sig
-    include CARDINAL with type n = r cell
-
-    (* A value of type row represents the index of a row of a matrix.
-       A row of node [n] belongs to the interval
-         0 .. Array.length (Tree.pre_classes n) - 1
-    *)
-    type row = int
-
-    (* A value of type column represents the index of a column of a matrix.
-       A column of node [n] belongs to the interval
-         0 .. Array.length (Tree.post_classes n) - 1
-    *)
-    type column = int
-
-    (* Get the cell corresponding to a node, a row, and a column *)
-    val encode : Tree.n index -> pre:row -> post:column -> n index
-    val iter_node : Tree.n index -> (n index -> unit) -> unit
-
-    (* Get the node, row, and column corresponding to a cell *)
-    val decode : n index -> Tree.n index * row * column
-
-    (* Index of the first cell of matrix associated to a node *)
-    val first_cell : Tree.n index -> n index
-
-    type goto = r goto_cell
-    val goto : goto cardinal
-    val is_goto : n index -> goto index option
-    val of_goto : goto index -> n index
-    val goto_encode : g goto_transition index -> pre:row -> post:column -> goto index
-    val goto_decode : goto index -> g goto_transition index * row * column
-    val iter_goto : g goto_transition index -> (goto index -> unit) -> unit
-  end
-
-  module Analysis : sig
-    val cost : Cell.n index -> int
-    val finite : Cell.n index -> bool
-  end
-end
-
-type ('g, 'r) t = (module S with type g = 'g and type r = 'r)
-type 'g _t = (module S with type g = 'g)
+(* ---------------------------------------------------------------------- *)
 
 (* Testing class inclusion *)
 let quick_subset = IndexSet.quick_subset
-
-(* ---------------------------------------------------------------------- *)
 
 (* This module implements efficient representations of the coerce matrices,
    as mentioned in section 6.5.
@@ -158,6 +72,7 @@ let quick_subset = IndexSet.quick_subset
 
    Our coercion functions are augmented to handle this special case.
 *)
+
 module Coercion : sig
   type pre = Pre_identity | Pre_singleton of int
 
@@ -266,6 +181,100 @@ end = struct
       ) backward;
     { forward; backward }
 end
+
+module type S = sig
+  type g
+  type r
+
+  (* [unreduce tr] lists all the reductions that ends up following [tr]. *)
+  val unreduce : g goto_transition index -> g reduction list
+
+  module Classes : sig
+    (* Returns the classes of terminals for a given goto transition *)
+    val for_edge : g goto_transition index -> g terminal indexset array
+
+    (* Returns the classes of terminals for a given LR(1) state *)
+    val for_lr1 : g lr1 index -> g terminal indexset array
+
+    (* Returns the classes of terminals before taking a transition *)
+    val pre_transition : g transition index -> g terminal indexset array
+
+    (* Returns the classes of terminals after taking a transition *)
+    val post_transition : g transition index -> g terminal indexset array
+  end
+
+  module Tree : sig
+    include CARDINAL with type n = r tree_node
+
+    (* Returns the leaf node corresponding to a given transition *)
+    val leaf : g transition index -> n index
+
+    (* Splits a node into its left and right children if it is an inner node *)
+    val split : n index -> (g transition index, n index * n index) either
+
+    (* Returns the nullable terminals and non-nullable equations for a given goto transition *)
+    val goto_equations : g goto_transition index -> (g, n) tree_equations
+
+    (* Returns the pre-classes for a given node *)
+    val pre_classes : n index -> g terminal indexset array
+
+    (* Returns the post-classes for a given node *)
+    val post_classes : n index -> g terminal indexset array
+  end
+
+  (* Identify each cell of compact cost matrices.
+     A [Cell.n index] can be thought of as a triple made of a tree node and two indices
+     (row, col) of the compact cost matrix associated to the node. *)
+  module Cell : sig
+    include CARDINAL with type n = r cell
+
+    (* A value of type row represents the index of a row of a matrix.
+       A row of node [n] belongs to the interval
+         0 .. Array.length (Tree.pre_classes n) - 1
+    *)
+    type row = int
+
+    (* A value of type column represents the index of a column of a matrix.
+       A column of node [n] belongs to the interval
+         0 .. Array.length (Tree.post_classes n) - 1
+    *)
+    type column = int
+
+    (* Get the cell corresponding to a node, a row, and a column *)
+    val encode : Tree.n index -> pre:row -> post:column -> n index
+    val iter_node : Tree.n index -> (n index -> unit) -> unit
+
+    (* Get the node, row, and column corresponding to a cell *)
+    val decode : n index -> Tree.n index * row * column
+
+    (* Index of the first cell of matrix associated to a node *)
+    val first_cell : Tree.n index -> n index
+
+    type goto = r goto_cell
+    val goto : goto cardinal
+    val is_goto : n index -> goto index option
+    val of_goto : goto index -> n index
+    val goto_encode : g goto_transition index -> pre:row -> post:column -> goto index
+    val goto_decode : goto index -> g goto_transition index * row * column
+    val iter_goto : g goto_transition index -> (goto index -> unit) -> unit
+  end
+
+  val visit_occurrences :
+    Cell.n index ->
+    visit_goto:(Cell.goto index -> unit) ->
+    from_left:(right:'a -> parent:Cell.n index -> unit) ->
+    acc:'a ->
+    acc_right:('a -> Cell.n index -> 'a) ->
+    from_right:(left:Cell.n index -> parent:Cell.n index -> unit) -> unit
+
+  module Analysis : sig
+    val cost : Cell.n index -> int
+    val finite : Cell.n index -> bool
+  end
+end
+
+type ('g, 'r) t = (module S with type g = 'g and type r = 'r)
+type 'g _t = (module S with type g = 'g)
 
 (* ---------------------------------------------------------------------- *)
 
@@ -973,6 +982,8 @@ let make (type g) ?(avoid=fun _ -> false) (g : g grammar) : g _t = (module struc
       in
       List.iter update_dep occurrences.:(node)
   end
+
+  let visit_occurrences = Reverse_dependencies.visit_occurrences
 
   let () = stopwatch 2 "reachability: reversed matrix dependencies"
 

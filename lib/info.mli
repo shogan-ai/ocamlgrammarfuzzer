@@ -111,6 +111,7 @@ module Production : sig
   val length : 'g grammar -> 'g n index -> int
   val kind : 'g grammar -> 'g n index -> [ `REGULAR | `START ]
   val all : 'g grammar -> 'g n indexset
+  val to_string : 'g grammar -> 'g n index -> string
 end
 
 (* Explicit representation of LR(0) items *)

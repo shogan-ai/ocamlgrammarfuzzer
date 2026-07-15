@@ -113,6 +113,9 @@ type ('g, 'm, 'a) path =
       meta: 'm;
     }
 
+let get_path_meta
+    (Left_of {meta; _} | Right_of {meta; _} | In_expansion {meta; _}) = meta
+
 let map_path f = function
   | Left_of {right; meta} ->
     let right = f right in

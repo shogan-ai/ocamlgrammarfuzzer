@@ -29,6 +29,7 @@ let opt_print_entrypoint = ref false
 let opt_weights = ref []
 let opt_avoid = ref ["error"]
 let opt_focus = ref []
+let opt_focus_red = ref []
 let opt_exhaust = ref false
 let opt_check = ref `None
 let opt_check_command = ref None
@@ -77,6 +78,7 @@ let spec_list = [
   ("--weight", Arg.String (push opt_weights), "<float> <pattern> Adjust the weights of grammatical constructions");
   ("--avoid", Arg.String (push opt_avoid), "<pattern> Forbid grammatical constructions");
   ("--focus", Arg.String (push opt_focus), "<pattern> Generate sentences stressing specific grammatical constructions");
+  ("--focus-reductions", Arg.String (push opt_focus_red), "<rule> Generate sentences stressing reduction of specific rules");
   ("--exhaust", Arg.Set opt_exhaust, " Exhaust mode generates a deterministic set of sentences that cover all reachable constructions");
   ("--oxcaml"   , Arg.Set opt_oxcaml, " Work with Oxcaml dialect");
   ("--lr1"   , Arg.Set opt_lr1, " When using a builtin grammar (ocaml or --oxcaml), use LR(1) instead of LALR(1) automaton");
@@ -377,6 +379,30 @@ let transl_filter = function
   | filter ->
     Either.Right (Transl.transl_filter_to_prods
                     grammar symbol_index pattern_pos filter)
+
+let handle_transl_error f =
+  try f () with
+  | Error (pos, msg) ->
+    Syntax.error pos "%s." msg
+  | Transl.Unknown_symbol (pos, name) ->
+    let candidates = ref [] in
+    let cache = Damerau_levenshtein.make_cache () in
+    Index.iter (Symbol.cardinal grammar) begin fun sym ->
+      let name' = Symbol.name grammar sym in
+      let dist = Damerau_levenshtein.distance cache name name' in
+      if dist <= 7 then
+        push candidates (dist, name')
+    end;
+    match
+      List.sort (compare_fst Int.compare) !candidates
+      |> list_take 10
+      |> List.rev_map snd
+    with
+    | [] -> Syntax.error pos "unknown symbol %s." name
+    | [x] -> Syntax.error pos "unknown symbol %s.\nDid you mean %s?" name x
+    | x :: xs ->
+      Syntax.error pos "unknown symbol %s.\nDid you mean %s?" name
+        (String.concat ", " (List.rev (("or " ^ x) :: xs)))
 
 let process_weight (weight, filter) =
   let update_prod prod = weights.@(prod) <- ( *. ) weight in
@@ -853,8 +879,8 @@ let derivations =
     IndexSet.elements entrypoints
     |> List.map (fun tr -> tr, 1.0)
   in
-  match List.rev !opt_focus with
-  | [] when not !opt_exhaust ->
+  match List.rev !opt_focus_red, List.rev !opt_focus, !opt_exhaust with
+  | [], [], false ->
     let count = match !opt_count with
       | 0 when [] = !opt_print_derivations -> 1
       | n -> n
@@ -864,83 +890,214 @@ let derivations =
           ~from:(sample_list entrypoints)
           ~length:!opt_length ()
       )
-  | focus ->
-    let todo = Boolvector.make Reach.Cell.n !opt_exhaust in
-    if not !opt_exhaust then (
-      try
-        let focused_sym = Boolvector.make (Symbol.cardinal grammar) false in
-        let focused_prods = Boolvector.make (Production.cardinal grammar) false in
-        let focused_items = Vector.make (Production.cardinal grammar) IntSet.empty in
-        let process_focus filter =
-          match transl_filter filter with
-          | Either.Left sym ->
-            Boolvector.set focused_sym sym
-          | Either.Right prods ->
-            List.iter (fun (prod, dots) ->
-                if IntSet.is_empty dots
-                then Boolvector.set focused_prods prod
-                else focused_items.@(prod) <- IntSet.union dots
-              ) prods
-        in
-        List.iter (fun spec -> process_focus (parse_pattern spec)) focus;
-        let set_node node = Reach.Cell.iter_node node (Boolvector.set todo) in
-        Index.iter (Transition.any grammar) (fun tr ->
-            if Boolvector.test focused_sym (Transition.symbol grammar tr) then
-              set_node (Reach.Tree.leaf tr)
-          );
-        let rec visit_items i node f =
-          f node i;
-          let i =
-            match Reach.Tree.split node with
-            | L _ -> i + 1
-            | R (l, r) ->
-              let i = visit_items i l f in
-              let i = visit_items i r f in
-              i
+  | (_ :: _), (_ :: _), _ ->
+    Syntax.error Lexing.dummy_pos
+      "cannot specify both --focus and --focus-reductions"
+  | focus_red, [], _exhaust ->
+    let focused_prods = Boolvector.make (Production.cardinal grammar) false in
+    let process_spec spec =
+      match transl_filter (parse_pattern spec) with
+      | Either.Left _ ->
+        raise_errorf Lexing.dummy_pos
+          "--focus-reductions %s: only productions are accepted, not symbols"
+          spec
+      | Either.Right prods ->
+        List.iter (fun (prod, dots) ->
+            if not (IntSet.is_empty dots) then
+              raise_errorf Lexing.dummy_pos
+                "--focus-reductions %s: only productions are accepted, not items"
+                spec;
+            Boolvector.set focused_prods prod
+          ) prods
+    in
+    handle_transl_error (fun () -> List.iter process_spec focus_red);
+    (* 0. Start from all cells *)
+    let cells =
+      Seq.init (cardinal Reach.Cell.n)
+        (Index.of_int Reach.Cell.n)
+    in
+    (* 1. Find cells about reducing a relevant production *)
+    let cell_is_reachable cell =
+      fst bfs.:(cell) < max_int &&
+      Reach.Analysis.cost cell < max_int
+    in
+    let cells_of_interest cell0 =
+      if cell_is_reachable cell0 then
+        let node, pre, post = Reach.Cell.decode cell0 in
+        match Reach.Tree.split node with
+        | R _ -> Seq.empty
+        | L tr ->
+          match Transition.split grammar tr with
+          | R _ -> Seq.empty
+          | L gt ->
+            let cells = ref [] in
+            iter_eqns pre post gt ~f:begin fun reduction cell ->
+              if Boolvector.test focused_prods reduction.Reachability.production &&
+                 cell_is_reachable cell
+              then
+                let path = [Derivation.In_expansion {reduction; meta=cell0}] in
+                push cells (path, cell)
+            end;
+            List.to_seq (List.rev !cells)
+      else
+        Seq.empty
+    in
+    (* 2. From a "production" cell, construct suffixes of derivation paths
+       reducing it *)
+    let marks = Vector.make Reach.Cell.n (ref ()) in
+    let reduction_fringes suffix cell =
+      let cell = match suffix with
+        | [] -> cell
+        | comp :: _ -> Derivation.get_path_meta comp
+      in
+      assert (cell_is_reachable cell);
+      let mark = ref () in
+      let visit parent =
+        if not (cell_is_reachable parent && marks.:(parent) != mark)
+        then false
+        else (marks.:(parent) <- mark; true)
+      in
+      let predecessors cell0 =
+        let acc = ref [] in
+        Reach.visit_occurrences cell0
+          ~visit_goto:begin fun gt ->
+            let cell = Reach.Cell.of_goto gt in
+            if visit cell then
+              let reduction = ref None in
+              let gt, pre, post = Reach.Cell.goto_decode gt in
+              iter_eqns ~f:begin fun red cell' ->
+                if Index.equal cell0 cell' then
+                  reduction := Some red;
+              end pre post gt;
+              let reduction = Option.get !reduction in
+              push acc (Derivation.In_expansion {reduction; meta=cell})
+          end
+          ~acc:None
+          ~acc_right:begin fun acc cell ->
+            if Option.is_none acc &&
+               Reach.Analysis.cost cell = 0 &&
+               cell_is_reachable cell
+            then Some cell
+            else acc
+          end
+          ~from_left:begin fun ~right ~parent ->
+            match right with
+            | Some right ->
+              if visit parent then
+                push acc (Derivation.Left_of {right; meta=parent})
+            | None -> ()
+          end
+          ~from_right:begin fun ~left ~parent ->
+            if cell_is_reachable left && visit parent then
+              push acc (Derivation.Right_of {left; meta=parent})
+          end;
+        !acc
+      in
+      let paths = ref [] in
+      let rec complete_paths cell suffix =
+        match predecessors cell with
+        | [] -> push paths suffix
+        | xs ->
+          let complete_derivation suffix component =
+            complete_paths
+              (Derivation.get_path_meta component)
+              (component :: suffix)
           in
-          f node i;
-          i
+          List.iter (complete_derivation suffix) xs
+      in
+      complete_paths cell suffix;
+      !paths
+    in
+    cells
+    |> Seq.concat_map cells_of_interest
+    |> Seq.concat_map begin fun (suffix, cell) ->
+      let fringes = reduction_fringes suffix cell in
+      if false then
+      Printf.eprintf "cell:%d fringes: %d %s\n"
+        (cell :> int)
+        (List.length fringes)
+        (string_concat_map "\n" (fun path ->
+             string_concat_map "  ->  " (function
+               | Derivation.Left_of _ -> "Left_of"
+               | Derivation.Right_of _ -> "Right_of"
+               | Derivation.In_expansion t ->
+                 Production.to_string grammar t.reduction.production
+               ) path
+           ) fringes);
+      List.concat_map begin fun suffix ->
+        let end_of_suffix = match suffix with
+          | [] -> cell
+          | comp :: _ -> Derivation.get_path_meta comp
         in
-        Index.iter (Transition.goto grammar) (fun gt ->
-            let eqns = Reach.Tree.goto_equations gt in
-            if List.exists
-                (fun {Reachability.production; _} ->
-                   Boolvector.test focused_prods production)
-                eqns.nullable then
-              set_node (Reach.Tree.leaf (Transition.of_goto grammar gt));
-            List.iter begin fun ((red : _ Reachability.reduction), node) ->
-              if Boolvector.test focused_prods red.production then
-                set_node node;
-              let dots = focused_items.:(red.production) in
-              if not (IntSet.is_empty dots) then
-                ignore (visit_items 0 node (fun node i ->
-                    if IntSet.mem i dots then
-                      set_node node
-                  ) : int)
-            end eqns.non_nullable;
-          );
-      with
-      | Error (pos, msg) ->
-        Syntax.error pos "%s." msg
-      | Transl.Unknown_symbol (pos, name) ->
-        let candidates = ref [] in
-        let cache = Damerau_levenshtein.make_cache () in
-        Index.iter (Symbol.cardinal grammar) begin fun sym ->
-          let name' = Symbol.name grammar sym in
-          let dist = Damerau_levenshtein.distance cache name name' in
-          if dist <= 7 then
-            push candidates (dist, name')
-        end;
-        match
-          List.sort (compare_fst Int.compare) !candidates
-          |> list_take 10
-          |> List.rev_map snd
-        with
-        | [] -> Syntax.error pos "unknown symbol %s." name
-        | [x] -> Syntax.error pos "unknown symbol %s.\nDid you mean %s?" name x
-        | x :: xs ->
-          Syntax.error pos "unknown symbol %s.\nDid you mean %s?" name
-            (String.concat ", " (List.rev (("or " ^ x) :: xs)))
+        let derivation = min_sentence cell in
+        let unroll_path derivation component =
+          Derivation.unroll_path derivation
+            (Derivation.map_path min_sentence component)
+        in
+        let derivation =
+          List.fold_right (Fun.flip unroll_path) suffix derivation
+        in
+        let derivation =
+          List.fold_left unroll_path derivation (snd bfs.:(end_of_suffix))
+        in
+        [derivation]
+      end fringes
+      |> List.to_seq
+    end
+  | [], focus, exhaust ->
+    let todo = Boolvector.make Reach.Cell.n exhaust in
+    if not exhaust then (
+      let focused_sym = Boolvector.make (Symbol.cardinal grammar) false in
+      let focused_prods = Boolvector.make (Production.cardinal grammar) false in
+      let focused_items = Vector.make (Production.cardinal grammar) IntSet.empty in
+      let process_spec spec =
+        match transl_filter (parse_pattern spec) with
+        | Either.Left sym ->
+          Boolvector.set focused_sym sym
+        | Either.Right prods ->
+          List.iter (fun (prod, dots) ->
+              if IntSet.is_empty dots
+              then Boolvector.set focused_prods prod
+              else focused_items.@(prod) <- IntSet.union dots
+            ) prods
+      in
+      handle_transl_error (fun () -> List.iter process_spec focus);
+      let set_node node = Reach.Cell.iter_node node (Boolvector.set todo) in
+      Index.iter (Transition.any grammar) (fun tr ->
+          if Boolvector.test focused_sym (Transition.symbol grammar tr) then
+            set_node (Reach.Tree.leaf tr)
+        );
+      let rec visit_items i node f =
+        f node i;
+        let i =
+          match Reach.Tree.split node with
+          | L _ -> i + 1
+          | R (l, r) ->
+            let i = visit_items i l f in
+            let i = visit_items i r f in
+            i
+        in
+        f node i;
+        i
+      in
+      Index.iter (Transition.goto grammar) (fun gt ->
+          let eqns = Reach.Tree.goto_equations gt in
+          if List.exists
+              (fun {Reachability.production; _} ->
+                 Boolvector.test focused_prods production)
+              eqns.nullable then
+            set_node (Reach.Tree.leaf (Transition.of_goto grammar gt));
+          List.iter begin fun ((red : _ Reachability.reduction), node) ->
+            if Boolvector.test focused_prods red.production then
+              set_node node;
+            let dots = focused_items.:(red.production) in
+            if not (IntSet.is_empty dots) then
+              ignore (visit_items 0 node (fun node i ->
+                  if IntSet.mem i dots then
+                    set_node node
+                ) : int)
+          end eqns.non_nullable;
+        );
     );
     let rec mark_derivation der =
       Boolvector.clear todo (Derivation.meta der);
@@ -948,7 +1105,7 @@ let derivations =
     in
     let gen_cell length cell =
       let der =
-        if !opt_exhaust
+        if exhaust
         then min_sentence cell
         else fuzz length cell
       in

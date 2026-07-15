@@ -62,6 +62,8 @@ type ('g, 'm, 'a) path =
       meta: 'm;
     }
 
+val get_path_meta : (_, 'm, _) path -> 'm
+
 val map_path : ('a -> 'b) -> ('g, 'm, 'a) path -> ('g, 'm, 'b) path
 
 val unroll_path : ('g, 'r, 'm) t -> ('g, 'm, ('g, 'r, 'm) t) path -> ('g, 'r, 'm) t
