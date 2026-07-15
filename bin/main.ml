@@ -945,13 +945,13 @@ let derivations =
     (* 2. From a "production" cell, construct suffixes of derivation paths
        reducing it *)
     let marks = Vector.make Reach.Cell.n (ref ()) in
+    let mark = ref () in
     let reduction_fringes suffix cell =
       let cell = match suffix with
         | [] -> cell
         | comp :: _ -> Derivation.get_path_meta comp
       in
       assert (cell_is_reachable cell);
-      let mark = ref () in
       let visit parent =
         if not (cell_is_reachable parent && marks.:(parent) != mark)
         then false
