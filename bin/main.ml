@@ -962,6 +962,30 @@ let derivations =
         inner_paths.:(cell) <- !result;
         !result
     in
+    let rec get_rightmost_nt cell =
+      let node, pre, post = Reach.Cell.decode cell in
+      match Reach.Tree.split node with
+      | R (l, r) ->
+        let result = ref [] in
+        iter_sub_nodes ~f:(fun l r ->
+            match get_rightmost_nt r with
+            | [] ->
+              let right = min_sentence r in
+              result := List.fold_left (fun result (path, der) ->
+                  (Derivation.Left_of {meta=cell; right} :: path, der) :: result
+                ) !result (get_rightmost_nt l)
+            | rs ->
+              let left = min_sentence l in
+              result := List.fold_left (fun result (path, der) ->
+                  (Derivation.Right_of {meta=cell; left} :: path, der) :: result)
+                  !result rs
+          ) pre post l r;
+        !result
+      | L tr ->
+        match Transition.split grammar tr with
+        | R _ -> []
+        | L _ -> [[], cell]
+    in
     let marks = Vector.make Reach.Cell.n (ref ()) in
     let mark = ref () in
     let reduction_fringes cell =
