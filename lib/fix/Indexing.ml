@@ -269,6 +269,9 @@ module Index = struct
       incr next;
       i
 
+  let to_seq (n : 'n cardinal) : 'n index Seq.t =
+    Seq.init (cardinal n) Fun.id
+
   let rev_enumerate (n : 'n cardinal) : unit -> 'n index =
     let n = cardinal n in
     let next = ref (n - 1) in

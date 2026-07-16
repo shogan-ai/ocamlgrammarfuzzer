@@ -210,6 +210,8 @@ module Index : sig
   val enumerate : 'n cardinal -> (unit -> 'n index)
   val rev_enumerate : 'n cardinal -> (unit -> 'n index)
 
+  val to_seq : 'n cardinal -> 'n index Seq.t
+
   (** To implement clever datastructures (for instance using bit-packing),
       it is useful to manipulate indices as integers. See [IndexSet] or
       [IndexMap] for usage examples. Refrain from using it if you are not sure

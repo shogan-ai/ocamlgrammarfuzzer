@@ -911,46 +911,29 @@ let derivations =
           ) prods
     in
     handle_transl_error (fun () -> List.iter process_spec focus_red);
-    (* 0. Start from all cells *)
-    let cells =
-      Seq.init (cardinal Reach.Cell.n)
-        (Index.of_int Reach.Cell.n)
-    in
     (* 1. Find cells about reducing a relevant production *)
     let cell_is_reachable cell =
       fst bfs.:(cell) < max_int &&
       Reach.Analysis.cost cell < max_int
     in
-    let cells_of_interest cell0 =
-      if cell_is_reachable cell0 then
-        let node, pre, post = Reach.Cell.decode cell0 in
-        match Reach.Tree.split node with
-        | R _ -> Seq.empty
-        | L tr ->
-          match Transition.split grammar tr with
-          | R _ -> Seq.empty
-          | L gt ->
-            let cells = ref [] in
-            iter_eqns pre post gt ~f:begin fun reduction cell ->
-              if Boolvector.test focused_prods reduction.Reachability.production &&
-                 cell_is_reachable cell
-              then
-                let path = [Derivation.In_expansion {reduction; meta=cell0}] in
-                push cells (path, cell)
-            end;
-            List.to_seq (List.rev !cells)
-      else
-        Seq.empty
+    let cells_of_interest gt =
+      (Reach.Tree.goto_equations gt).non_nullable
+      |> List.concat_map begin fun (reduction, node) ->
+        let cells = ref [] in
+        if Boolvector.test focused_prods reduction.Reachability.production then
+          Reach.Cell.iter_node node begin fun cell ->
+            if cell_is_reachable cell then
+              push cells cell
+          end;
+        List.rev !cells
+      end
+      |> List.to_seq
     in
     (* 2. From a "production" cell, construct suffixes of derivation paths
        reducing it *)
     let marks = Vector.make Reach.Cell.n (ref ()) in
     let mark = ref () in
-    let reduction_fringes suffix cell =
-      let cell = match suffix with
-        | [] -> cell
-        | comp :: _ -> Derivation.get_path_meta comp
-      in
+    let reduction_fringes cell =
       assert (cell_is_reachable cell);
       let visit parent =
         if not (cell_is_reachable parent && marks.:(parent) != mark)
@@ -1005,13 +988,13 @@ let derivations =
           in
           List.iter (complete_derivation suffix) xs
       in
-      complete_paths cell suffix;
+      complete_paths cell [];
       !paths
     in
-    cells
+    Index.to_seq (Transition.goto grammar)
     |> Seq.concat_map cells_of_interest
-    |> Seq.concat_map begin fun (suffix, cell) ->
-      let fringes = reduction_fringes suffix cell in
+    |> Seq.concat_map begin fun cell ->
+      let fringes = reduction_fringes cell in
       if false then
       Printf.eprintf "cell:%d fringes: %d %s\n"
         (cell :> int)
