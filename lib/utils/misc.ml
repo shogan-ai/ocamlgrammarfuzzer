@@ -352,6 +352,11 @@ let list_uniq ?(equal=(=)) = function
     in
     loop [] x xs
 
+let rec list_rev_mappend f l1 l2 =
+  match l1 with
+  | [] -> l2
+  | x :: xs -> list_rev_mappend f xs (f x :: l2)
+
 let rec fixpoint ?counter ~propagate todo = match !todo with
   | [] -> ()
   | todo' ->

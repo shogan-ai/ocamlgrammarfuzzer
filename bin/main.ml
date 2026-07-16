@@ -931,6 +931,37 @@ let derivations =
     in
     (* 2. From a "production" cell, construct suffixes of derivation paths
        reducing it *)
+    let inner_paths = Vector.make Reach.Cell.n [] in
+    let rec get_inner_derivations cell =
+      match inner_paths.:(cell) with
+      | (_ :: _) as result -> result
+      | [] ->
+        let min = min_sentence cell in
+        inner_paths.:(cell) <- [min];
+        let node, pre, post = Reach.Cell.decode cell in
+        let result = ref [] in
+        begin match Reach.Tree.split node with
+          | R (l, r) ->
+            iter_sub_nodes ~f:(fun l r ->
+                let dl = min_sentence l in
+                List.iter
+                  (fun dr -> push result (Derivation.node cell dl dr))
+                  (get_inner_derivations r)
+              ) pre post l r;
+          | L tr ->
+            match Transition.split grammar tr with
+            | R _ -> result := [min];
+            | L gt ->
+              iter_eqns pre post gt
+                ~f:(fun red cell' ->
+                    result :=
+                      List.fold_left
+                        (fun result der -> Derivation.expand cell der red :: result)
+                        !result (get_inner_derivations cell'))
+        end;
+        inner_paths.:(cell) <- !result;
+        !result
+    in
     let marks = Vector.make Reach.Cell.n (ref ()) in
     let mark = ref () in
     let reduction_fringes cell =
@@ -1007,23 +1038,20 @@ let derivations =
                  Production.to_string grammar t.reduction.production
                ) path
            ) fringes);
+      let derivations = get_inner_derivations cell in
       List.concat_map begin fun suffix ->
         let end_of_suffix = match suffix with
           | [] -> cell
           | comp :: _ -> Derivation.get_path_meta comp
         in
-        let derivation = min_sentence cell in
-        let unroll_path derivation component =
-          Derivation.unroll_path derivation
-            (Derivation.map_path min_sentence component)
+        let path =
+          snd bfs.:(end_of_suffix)
+          |> List.map (Derivation.map_path min_sentence)
+          |> list_rev_mappend (Derivation.map_path min_sentence) suffix
         in
-        let derivation =
-          List.fold_right (Fun.flip unroll_path) suffix derivation
-        in
-        let derivation =
-          List.fold_left unroll_path derivation (snd bfs.:(end_of_suffix))
-        in
-        [derivation]
+        List.map (fun derivation ->
+            List.fold_left Derivation.unroll_path derivation path)
+          derivations
       end fringes
       |> List.to_seq
     end
