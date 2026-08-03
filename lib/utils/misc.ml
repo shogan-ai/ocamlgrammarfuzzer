@@ -51,6 +51,16 @@ let array_compare cmp a1 a2 =
   done;
   !c
 
+let array_equal cmp a1 a2 =
+  let len = Array.length a1 in
+  let b = ref (Int.equal len (Array.length a2)) in
+  let i = ref 0 in
+  while !b && !i < len do
+    b := cmp a1.(!i) a2.(!i);
+    incr i
+  done;
+  !b
+
 (** [group ~compare ~group list]
     Group togethers the elements of [list] that are equivalent according to
     [compare], using the [group] function *)
@@ -296,6 +306,13 @@ let sort_and_merge_indexed compare l =
     (fun (x, ix) rest -> (x, List.fold_left union_ix ix rest))
     l
 
+let list_rev_filter_map f xs =
+  List.fold_left (fun acc x ->
+      match f x with
+      | None -> acc
+      | Some y -> y :: acc
+    ) [] xs
+
 let list_foralli f l =
   let rec loop i = function
     | [] -> true
@@ -330,13 +347,13 @@ let rec list_rev_iter f = function
     f x1
   | [] -> ()
 
-let rec list_take n = function
-  | x :: xs when n > 0 -> x :: list_take (n - 1) xs
-  | _ -> []
-
 let rec list_drop n = function
   | _ :: xs when n > 0 -> list_drop (n - 1) xs
   | xs -> xs
+
+let rec list_take n = function
+  | x :: xs when n > 0 -> x :: list_take (n - 1) xs
+  | _ -> []
 
 let list_uniq ?(equal=(=)) = function
   | [] -> []
@@ -355,9 +372,9 @@ let list_uniq ?(equal=(=)) = function
 let rec fixpoint ?counter ~propagate todo = match !todo with
   | [] -> ()
   | todo' ->
-    Option.iter incr counter;
     todo := [];
     List.iter propagate todo';
+    Option.iter incr counter;
     fixpoint ?counter ~propagate todo
 
 let assert_equal_length v1 v2 =
@@ -425,6 +442,12 @@ let stopwatch_perf_step i =
     !result
   | _ -> None
 
+(* Stub Perfctl *)
+module Perfctl = struct
+  let enable () = ()
+  let disable () = ()
+end
+
 let stopwatch level fmt =
   if level <= !verbosity_level then (
     let delta = stopwatch_delta level in
@@ -442,40 +465,6 @@ let stopwatch level fmt =
   ) else
     Printf.ifprintf stderr fmt
 
-let read_lines ic =
-  let rec loop () =
-    match input_line ic with
-    | line -> Seq.Cons (line, loop)
-    | exception End_of_file -> Seq.Nil
-  in
-  loop
-
-let batch_by ~size seq =
-  assert (size > 0);
-  let rec take acc n seq =
-    if n = 0 then
-      Seq.Cons (List.rev acc, start seq)
-    else
-      match seq () with
-      | Seq.Nil -> Seq.Cons (List.rev acc, Seq.empty)
-      | Seq.Cons (x, xs) -> take (x :: acc) (n - 1) xs
-  and start seq () =
-    match seq () with
-    | Seq.Nil -> Seq.Nil
-    | Seq.Cons (x, xs) ->
-      take [x] (size - 1) xs
-  in
-  start seq
-
-let failwithf fmt = Printf.ksprintf failwith fmt
-
-let string_chop_prefix ~prefix str =
-  if String.starts_with ~prefix str then
-    let lp = String.length prefix in
-    let ls = String.length str in
-    Some (String.sub str lp (ls - lp))
-  else
-    None
 
 let rewrite_keywords f (pos : Lexing.position) str =
   let b = Bytes.of_string str in
@@ -543,6 +532,58 @@ let rewrite_keywords f (pos : Lexing.position) str =
   done;
   Bytes.to_string b
 
+type 'a lazy_stream = {
+  lvalue: 'a;
+  lnext: 'a lazy_stream lazy_t;
+}
+
+let rec iterate x f = {
+  lvalue = x;
+  lnext = lazy (iterate (f x) f);
+}
+
+let iterate_vector v =
+  Vector.init (Vector.length v) @@ fun x ->
+  iterate
+    (IndexSet.singleton x)
+    (fun xs -> IndexSet.bind xs (Vector.get v))
+
+let rec list_rev_mappend f xs acc =
+  match xs with
+  | [] -> acc
+  | x :: xs -> list_rev_mappend f xs (f x :: acc)
+
+let list_is_empty = function
+  | [] -> true
+  | _ :: _ -> false
+
+let seq_singleton x () =
+  Seq.Cons (x, Seq.empty)
+
+let rec seq_memoize s =
+  let cache = ref None in
+  fun () ->
+    match !cache with
+    | Some r -> r
+    | None ->
+      match s () with
+      | Seq.Nil ->
+        cache := Some Seq.Nil;
+        Seq.Nil
+      | Seq.Cons (x, xs) ->
+        let s = Seq.Cons (x, seq_memoize xs) in
+        cache := Some s;
+        s
+
+let seq_mapi f s () =
+  let rec seq_mapi f i s () =
+    match s () with
+    | Seq.Nil -> Seq.Nil
+    | Seq.Cons (x, xs) ->
+      Seq.Cons (f i x, seq_mapi f (i + 1) xs)
+  in
+  seq_mapi f 0 s ()
+
 module Damerau_levenshtein = struct
   type cache = {
     mutable prev_prev: int array;
@@ -556,7 +597,7 @@ module Damerau_levenshtein = struct
     curr = [||];
   }
 
-  let distance c (s1 : string) (s2 : string) : int =
+  let distance c ?(max=max_int) (s1 : string) (s2 : string) : int =
     let l1 = String.length s1 in
     let l2 = String.length s2 in
 
@@ -598,9 +639,15 @@ module Damerau_levenshtein = struct
           then prev_prev.(i-2) + 1
           else max_int
         in
-        curr.(i) <- Int.min
+        let actual =
+          Int.min
             (Int.min delete_cost insert_cost)
             (Int.min substitute_cost transpose_cost)
+        in
+        ignore max;
+        (*if actual > max then raise Exit;
+          FIXME: implement early exit *)
+        curr.(i) <- actual
       done;
 
       (* Swap: curr becomes prev for next iteration *)
@@ -610,7 +657,68 @@ module Damerau_levenshtein = struct
     done;
 
     c.prev.(l1)
+
+  let filter_approx ~dist name seq =
+    let cache = make_cache () in
+    let filter (k, v) =
+      match distance cache ~max:dist name k with
+      | dist -> Some (dist, k, v)
+	  | exception Exit -> None
+    in
+    Seq.filter_map filter seq
+    |> List.of_seq
+    |> List.sort (fun (d1,_,_) (d2,_,_) -> Int.compare d1 d2)
 end
+
+let print_dym f oc = function
+  | [] -> ()
+  | x :: xs ->
+    let rec print_list oc = function
+      | [] -> ()
+      | [x] -> Printf.fprintf oc " or %s" (f x)
+      | x :: xs ->
+        Printf.fprintf oc ", %s" (f x);
+        print_list oc xs
+    in
+    Printf.fprintf oc " (did you mean %s%a?)" (f x)
+      print_list (list_take 4 xs)
+
+let rec list_last = function
+  | [] -> None
+  | [x] | [_; x] | [_; _; x] -> Some x
+  | _ :: _ :: _ :: xs -> list_last xs
+
+let escape_json_substring out s i l =
+  let i' = ref i in
+  let flush i =
+    if !i' < i then (
+      out s !i' (i - !i');
+    );
+    i' := i + 1
+  in
+  for i = i to i + l - 1 do
+    match
+      match s.[i] with
+      | '"'  -> Some "\\\""
+      | '\\' -> Some "\\\\"
+      | '\b' -> Some "\\b"
+      | '\n' -> Some "\\n"
+      | '\r' -> Some "\\r"
+      | '\t' -> Some "\\t"
+      | c when Char.code c < 32 ->
+        (* Escape control characters as \uXXXX *)
+        Some (Printf.sprintf "\\u%04x" (Char.code c))
+      | _ -> None
+    with
+    | None -> ()
+    | Some escape ->
+      flush i;
+      out escape 0 (String.length escape)
+  done;
+  flush (i + l)
+
+let escape_json_string out s =
+  escape_json_substring out s 0 (String.length s)
 
 module Lcs_with_alignement = struct
   type cache = {
@@ -660,3 +768,38 @@ module Lcs_with_alignement = struct
     done;
     lcs
 end
+
+let read_lines ic =
+  let rec loop () =
+    match input_line ic with
+    | line -> Seq.Cons (line, loop)
+    | exception End_of_file -> Seq.Nil
+  in
+  loop
+
+let batch_by ~size seq =
+  assert (size > 0);
+  let rec take acc n seq =
+    if n = 0 then
+      Seq.Cons (List.rev acc, start seq)
+    else
+      match seq () with
+      | Seq.Nil -> Seq.Cons (List.rev acc, Seq.empty)
+      | Seq.Cons (x, xs) -> take (x :: acc) (n - 1) xs
+  and start seq () =
+    match seq () with
+    | Seq.Nil -> Seq.Nil
+    | Seq.Cons (x, xs) ->
+      take [x] (size - 1) xs
+  in
+  start seq
+
+let failwithf fmt = Printf.ksprintf failwith fmt
+
+let string_chop_prefix ~prefix str =
+  if String.starts_with ~prefix str then
+    let lp = String.length prefix in
+    let ls = String.length str in
+    Some (String.sub str lp (ls - lp))
+  else
+    None

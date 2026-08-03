@@ -33,6 +33,12 @@ let is_empty = function
   | C _ ->
     false
 
+let is_not_empty = function
+  | N ->
+    false
+  | C _ ->
+    true
+
 let add i s =
   let ioffset = i mod word_size in
   let iaddr = i - ioffset
@@ -73,7 +79,7 @@ let split i s =
       if iaddr < addr then
         (* Stop now. *)
         (N, false, s)
-        
+
       else if iaddr = addr then
         (* Found appropriate cell, split bit field. *)
         let found = ss land imask <> 0 in
@@ -133,16 +139,14 @@ let rec fold f s accu =
   | N ->
     accu
   | C (base, ss, qs) ->
-    loop1 f qs base ss accu
-
-and loop1 f qs i ss accu =
-  if ss = 0 then
-    fold f qs accu
-  else
-    (* One could in principle check whether [ss land 0x3] is zero and if
-       so move to [i + 2] and [ss lsr 2], and similarly for various sizes.
-       In practice, this does not seem to make a measurable difference. *)
-    loop1 f qs (i + 1) (ss lsr 1) (if ss land 1 = 1 then f i accu else accu)
+    let ss' = ref ss in
+    let accu = ref accu in
+    for _ = 0 to Bit_lib.pop_count ss - 1 do
+      let bit = Bit_lib.lsb_index !ss' in
+      accu := f (base + bit) !accu;
+      ss' := !ss' lxor (1 lsl bit);
+    done;
+    fold f qs !accu
 
 let map f t =
   fold (fun x xs -> add (f x) xs) t empty
@@ -154,23 +158,30 @@ let filter_map f t =
 
 let iter f s =
   fold (fun x () -> f x) s ()
+let iteri f s =
+  let _ = fold (fun x i -> f i x; i + 1) s 0 in
+  ()
 
 let rec rev_iter f = function
   | N -> ()
   | C (base, ss, qs) ->
     rev_iter f qs;
-    for i = word_size downto 0 do
-      if ss land (1 lsl i) <> 0 then
-        f (base + i)
+    let ss' = ref ss in
+    for _ = 0 to Bit_lib.pop_count ss - 1 do
+      let bit = Bit_lib.msb_index !ss' in
+      f (base + bit);
+      ss' := !ss' lxor (1 lsl bit);
     done
 
 let rec fold_right f acc = function
   | N -> acc
   | C (base, ss, qs) ->
     let acc = ref (fold_right f acc qs) in
-    for i = word_size downto 0 do
-      if ss land (1 lsl i) <> 0 then
-        acc := f !acc (base + i)
+    let ss' = ref ss in
+    for _ = 0 to Bit_lib.pop_count ss - 1 do
+      let bit = Bit_lib.msb_index !ss' in
+      acc := f !acc (base + bit);
+      ss' := !ss' lxor (1 lsl bit);
     done;
     !acc
 
@@ -179,6 +190,11 @@ let exists f t =
   match fold (fun elt () -> if f elt then raise Found) t () with
   | () -> false
   | exception Found -> true
+let for_all f t =
+  let exception Found in
+  match fold (fun elt () -> if not (f elt) then raise Found) t () with
+  | () -> true
+  | exception Found -> false
 
 let is_singleton s =
   match s with
@@ -190,11 +206,18 @@ let is_singleton s =
   | N ->
     false
 
-let cardinal s =
-  fold (fun _ m -> m + 1) s 0
+let rec cardinal acc = function
+  | N -> acc
+  | C (_, mask, qs) ->
+    cardinal (acc + Bit_lib.pop_count mask) qs
+
+let cardinal qs = cardinal 0 qs
 
 let elements s =
-  List.rev (fold (fun tl hd -> tl :: hd) s [])
+  fold_right (fun tl hd -> hd :: tl) [] s
+
+let rev_map_elements t f =
+  fold_right (fun tl hd -> f hd :: tl) [] t
 
 let rec subset s1 s2 =
   match s1, s2 with
@@ -285,6 +308,44 @@ let rec inter s1 s2 =
       else if ss = ss1 && qs == qs1
       then s1
       else C (addr1, ss, qs)
+
+let fused_inter_union a b ~acc =
+  let rec inter_loop a b acc =
+    match a, b with
+    | N, _ | _, N -> acc
+    | C (addr1, ss1, qs1), C (addr2, ss2, qs2) ->
+      if addr1 < addr2 then
+        inter_loop qs1 b acc
+      else if addr1 > addr2 then
+        inter_loop a qs2 acc
+      else
+        match ss1 land ss2 with
+        | 0 -> inter_loop qs1 qs2 acc
+        | ss -> union_loop addr1 ss qs1 qs2 acc
+  and union_loop addr ss a b acc =
+    match acc with
+    | N -> C (addr, ss, inter a b)
+    | C (addr', ss', acc') ->
+      if addr < addr' then
+        C (addr, ss, inter_loop a b acc')
+      else if addr > addr' then
+        let acc'' = union_loop addr ss a b acc' in
+        if acc'' != acc' then
+          C (addr', ss', acc'')
+        else
+          acc
+      else (* addr = addr' *)
+        let ss = ss lor ss' in
+        if ss = ss' then
+          let acc'' = inter_loop a b acc' in
+          if acc'' != acc' then
+            C (addr', ss', acc'')
+          else
+            acc
+        else
+          C (addr', ss, inter_loop a b acc')
+  in
+  inter_loop a b acc
 
 exception Found of int
 
@@ -482,9 +543,12 @@ let rec filter f = function
   | N -> N
   | C (addr, word0, ss) as ss0 ->
     let word = ref 0 in
-    for i = 0 to word_size - 1 do
-      if word0 land (1 lsl i) <> 0 && f (addr + i) then
-        word := !word lor (1 lsl i)
+    let word' = ref word0 in
+    for _ = 0 to Bit_lib.pop_count word0 - 1 do
+      let bit = Bit_lib.lsb_index !word' in
+      if f (addr + bit) then
+        word := !word lor (1 lsl bit);
+      word' := !word' lxor (1 lsl bit);
     done;
     if !word = 0 then
       filter f ss
@@ -533,11 +597,9 @@ let rec allocate result = function
     C (addr, -1, allocate result qs)
 
   | C (addr, word, qs) ->
-    let i = ref 0 in
-    while word land (1 lsl !i) <> 0
-    do incr i done;
-    result := addr + !i;
-    C (addr, word lor (1 lsl !i), qs)
+    let i = Bit_lib.lsb_index (lnot word) in
+    result := addr + i;
+    C (addr, word lor (1 lsl i), qs)
 
 let allocate qs =
   let result = ref 0 in
@@ -549,14 +611,96 @@ let rec to_seq q =
   match q with
   | N -> Seq.empty
   | C (addr, mask, q') ->
-    c addr mask q' 0
+    c addr q' mask
 
-and c addr mask q' i =
-  if i > word_size then
-    to_seq q'
-  else if mask land (1 lsl i) = 0 then
-    c addr mask q' (i + 1)
-  else
-    fun () -> Seq.Cons (addr + i, c addr mask q' (i + 1))
+and c addr q' = function
+  | 0 -> to_seq q'
+  | mask ->
+    let i = Bit_lib.lsb_index mask in
+    fun () -> Seq.Cons (addr + i, c addr q' (mask lxor (1 lsl i)))
 
 let bind m f = fold (fun elt acc -> union (f elt) acc) m empty
+(** Split a set into consecutive “runs” of elements that share the same class.
+
+    {b Parameters}
+    - [cls : 'a element → 'b element] that assigns a class to each element.
+    - [xs  : 'a t] – the input set to be split.
+
+    {b Returns}
+    A list of pairs.  Each pair is made of a class (the result of [cls] for
+    the run) and the subset of the original elements that belong to that run
+    (preserving the original order). *)
+
+let rec split_by_run cls = function
+  | N -> assert false
+  | C (base, ss, N) ->
+    let bit = Bit_lib.msb_index ss in
+    let key = ref (cls (base + bit)) in
+    let mask = ref (1 lsl bit) in
+    let ss' = ref (ss lxor (1 lsl bit)) in
+    let accu = ref [] in
+    for _ = 1 to Bit_lib.pop_count ss - 1 do
+      let bit = Bit_lib.msb_index !ss' in
+      let key' = cls (base + bit) in
+      if Int.equal key' !key then
+        mask := !mask lor (1 lsl bit)
+      else (
+        accu := (!key, C (base, !mask, N)) :: !accu;
+        key := key';
+        mask := 1 lsl bit;
+      );
+      ss' := !ss' lxor (1 lsl bit);
+    done;
+    (!key, C (base, !mask, N), !accu)
+  | C (base, ss, qs) ->
+    let key, tail, accu = split_by_run cls qs in
+    let key = ref key in
+    let tail = ref tail in
+    let mask = ref 0 in
+    let accu = ref accu in
+    let ss' = ref ss in
+    for _ = 0 to Bit_lib.pop_count ss - 1 do
+      let bit = Bit_lib.msb_index !ss' in
+      let key' = cls (base + bit) in
+      if Int.equal key' !key then
+        mask := !mask lor (1 lsl bit)
+      else (
+        if !mask <> 0
+        then accu := (!key, C (base, !mask, !tail)) :: !accu
+        else accu := (!key, !tail) :: !accu;
+        tail := N;
+        key := key';
+        mask := 1 lsl bit;
+      );
+      ss' := !ss' lxor (1 lsl bit);
+    done;
+    (!key, C (base, !mask, !tail), !accu)
+
+let split_by_run cls = function
+  | N -> []
+  | set ->
+    let (key, tail, result) = split_by_run cls set in
+    (key, tail) :: result
+
+let map_to_array t f =
+  match minimum t with
+  | None -> [||]
+  | Some x ->
+    let n = cardinal t in
+    let y = f x in
+    let result = Array.make n y in
+    let _ = fold (fun x i -> if i > 0 then result.(i) <- f x; i + 1) t 0 in
+    result
+
+let rec rank addr mask acc = function
+  | N -> acc
+  | C (base, _, _) when base > addr -> acc
+  | C (base, ss, qs) when base < addr ->
+    rank addr mask (acc + Bit_lib.pop_count ss) qs
+  | C (_, ss, _) ->
+    acc + Bit_lib.pop_count (ss land mask)
+
+let rank i t =
+  let ioffset = i mod word_size in
+  let iaddr = i - ioffset and imask = 1 lsl ioffset in
+  rank iaddr (imask - 1) 0 t

@@ -68,9 +68,6 @@ end
 
 include Index.Unsafe.Coerce(F)(IntMap)
 
-let domain t =
-  fold (fun n _ set -> IndexSet.add n set) t IndexSet.empty
-
 let inflate (f : 'n index -> 'a) (set : 'n IndexSet.t) : ('n, 'a) t =
   IndexSet.fold (fun i map -> add i (f i) map) set empty
 
@@ -80,3 +77,18 @@ let filter_inflate (f : 'n index -> 'a option) (set : 'n IndexSet.t) : ('n, 'a) 
        | None -> map
        | Some x -> add i x map
     ) set empty
+
+let rev_iter f t =
+  Seq.iter f (to_rev_seq t)
+
+let domain t =
+  Seq.fold_left
+    (fun set (n, _) -> IndexSet.add n set)
+    IndexSet.empty (to_rev_seq t)
+
+let deflate t f =
+  Seq.fold_left begin fun set (k, v) ->
+    if f k v
+    then IndexSet.add k set
+    else set
+  end IndexSet.empty (to_rev_seq t)

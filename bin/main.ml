@@ -166,7 +166,7 @@ let cmly_content =
 
 module Grammar = MenhirSdk.Cmly_read.FromString(struct let content = cmly_content end)
 
-include Info.Lift(Grammar)
+include Info.Load_grammar(Grammar)
 open Info
 
 (* Print requested derivations first (if any) *)
@@ -175,7 +175,7 @@ let interpreter =
   let find_symbol =
     let table = Hashtbl.create 7 in
     Index.iter (Symbol.cardinal grammar) (fun t ->
-        Hashtbl.add table (Symbol.name grammar t) t;
+        Hashtbl.add table (Symbol.to_string grammar t) t;
       );
     fun name ->
       match Hashtbl.find_opt table name with
@@ -231,7 +231,7 @@ let interpreter =
              in
              String.sub name 0 (String.length name - 1) ^ ":"
            | Some sym ->
-             Symbol.name grammar sym
+             Symbol.to_string grammar sym
          in
          Derivation_printer.node label child)
       stack
@@ -245,7 +245,7 @@ let interpreter =
       match get_action top sym with
       | `Reject ->
         Printf.eprintf "No action from state %s on symbol %s\n"
-          (Lr1.to_string grammar top) (Symbol.name grammar sym);
+          (Lr1.to_string grammar top) (Symbol.to_string grammar sym);
         exit 1
       | `Shift state ->
         Some ((state, []) :: stack)
@@ -280,7 +280,7 @@ let interpreter =
     print_stack stack;
     if not ([] = remaining) then
       Printf.printf "Remaining symbols: %s\n"
-        (string_concat_map ", " (Symbol.name grammar) remaining)
+        (string_concat_map ", " (Symbol.to_string grammar) remaining)
 
 let parse_sentence text =
   let symbols = List.filter ((<>) "") (String.split_on_char ' ' text) in
@@ -780,7 +780,7 @@ let entrypoints =
   in
   find_entrypoints entrypoints
 
-let bfs =
+let bfs_from entrypoints =
   let bfs = Vector.make Reach.Cell.n (max_int, []) in
   Misc.stopwatch 1 "Start BFS";
   let todo = ref [] in
@@ -821,6 +821,8 @@ let bfs =
   fixpoint ~counter ~propagate todo;
   Misc.stopwatch 1 "Stop BFS (depth: %d)" !counter;
   bfs
+
+let bfs_from_entrypoints = bfs_from entrypoints
 
 (* Check we know how to print each terminal *)
 
@@ -923,7 +925,7 @@ let derivations =
         let candidates = ref [] in
         let cache = Damerau_levenshtein.make_cache () in
         Index.iter (Symbol.cardinal grammar) begin fun sym ->
-          let name' = Symbol.name grammar sym in
+          let name' = Symbol.to_string grammar sym in
           let dist = Damerau_levenshtein.distance cache name name' in
           if dist <= 7 then
             push candidates (dist, name')
@@ -957,7 +959,7 @@ let derivations =
       | exception Index.End_of_set -> Seq.Nil
       | cell when Reach.Analysis.cost cell = max_int (* empty language *) ||
                   not (Boolvector.test todo cell) ||
-                  [] = (snd bfs.:(cell)) (* unreachable from entrypoint *)
+                  [] = (snd bfs_from_entrypoints.:(cell)) (* unreachable from entrypoint *)
         -> next_cell ()
       | cell ->
         let length = ref !opt_length in
@@ -967,7 +969,11 @@ let derivations =
           length := !length - Derivation.length der;
           der
         in
-        let path = List.map (Derivation.map_path gen_path_component) (snd bfs.:(cell)) in
+        let path =
+          List.map
+            (Derivation.map_path gen_path_component)
+            (snd bfs_from_entrypoints.:(cell))
+        in
         let leaf = gen_cell rng !length cell in
         let der = List.fold_left Derivation.unroll_path leaf path in
         mark_derivation der;

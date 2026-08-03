@@ -53,7 +53,7 @@ module Indices = struct
   let make (type g) (g : g grammar) =
     (* linearized_symbols *)
     let linearized_symbols = Hashtbl.create 7 in
-    let name s = Symbol.name g ~mangled:false s in
+    let name s = Symbol.to_string g ~mangled:false s in
     let add_symbol s = Hashtbl.add linearized_symbols (name s) s in
     Index.iter (Symbol.cardinal g) add_symbol;
     (* by_incoming_symbol *)
