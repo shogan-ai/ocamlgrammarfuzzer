@@ -931,60 +931,75 @@ let derivations =
     in
     (* 2. From a "production" cell, construct suffixes of derivation paths
        reducing it *)
-    let inner_paths = Vector.make Reach.Cell.n [] in
+    let inner_paths = Vector.make Reach.Cell.n None in
     let rec get_inner_derivations cell =
-      match inner_paths.:(cell) with
-      | (_ :: _) as result -> result
-      | [] ->
-        let min = min_sentence cell in
-        inner_paths.:(cell) <- [min];
-        let node, pre, post = Reach.Cell.decode cell in
-        let result = ref [] in
-        begin match Reach.Tree.split node with
-          | R (l, r) ->
-            iter_sub_nodes ~f:(fun l r ->
-                let dl = min_sentence l in
-                List.iter
-                  (fun dr -> push result (Derivation.node cell dl dr))
-                  (get_inner_derivations r)
-              ) pre post l r;
-          | L tr ->
-            match Transition.split grammar tr with
-            | R _ -> result := [min];
-            | L gt ->
-              iter_eqns pre post gt
-                ~f:(fun red cell' ->
-                    result :=
-                      List.fold_left
-                        (fun result der -> Derivation.expand cell der red :: result)
-                        !result (get_inner_derivations cell'))
-        end;
-        inner_paths.:(cell) <- !result;
-        !result
+      if cell_is_reachable cell then
+        match inner_paths.:(cell) with
+        | Some result -> result
+        | None ->
+          let min = min_sentence cell in
+          inner_paths.:(cell) <- Some [min];
+          let node, pre, post = Reach.Cell.decode cell in
+          let result = ref [] in
+          begin match Reach.Tree.split node with
+            | R (l, r) ->
+              begin try
+                  iter_sub_nodes ~f:(fun l r ->
+                      let dl = min_sentence l in
+                      List.iter
+                        (fun dr -> push result (Derivation.node cell dl dr))
+                        (get_inner_derivations r);
+                      raise Exit
+                    ) pre post l r;
+                with Exit -> ()
+              end
+            | L tr ->
+              match Transition.split grammar tr with
+              | R _ -> result := [min];
+              | L gt ->
+                iter_eqns pre post gt
+                  ~f:(fun red cell' ->
+                      if cell_is_reachable cell' then
+                      result :=
+                        List.fold_left
+                          (fun result der -> Derivation.expand cell der red :: result)
+                          !result (get_inner_derivations cell'))
+          end;
+          inner_paths.:(cell) <- Some !result;
+          !result
+      else
+        []
+    in
+    ignore get_inner_derivations;
+    let get_inner_derivations cell =
+      [min_sentence cell]
     in
     let rec get_rightmost_nt cell =
-      let node, pre, post = Reach.Cell.decode cell in
-      match Reach.Tree.split node with
-      | R (l, r) ->
-        let result = ref [] in
-        iter_sub_nodes ~f:(fun l r ->
-            match get_rightmost_nt r with
-            | [] ->
-              let right = min_sentence r in
-              result := List.fold_left (fun result (path, der) ->
-                  (Derivation.Left_of {meta=cell; right} :: path, der) :: result
-                ) !result (get_rightmost_nt l)
-            | rs ->
-              let left = min_sentence l in
-              result := List.fold_left (fun result (path, der) ->
-                  (Derivation.Right_of {meta=cell; left} :: path, der) :: result)
-                  !result rs
-          ) pre post l r;
-        !result
-      | L tr ->
-        match Transition.split grammar tr with
-        | R _ -> []
-        | L _ -> [[], cell]
+      if cell_is_reachable cell then
+        let node, pre, post = Reach.Cell.decode cell in
+        match Reach.Tree.split node with
+        | R (l, r) ->
+          let result = ref [] in
+          iter_sub_nodes ~f:(fun l r ->
+              match get_rightmost_nt r with
+              | [] ->
+                let right = min_sentence r in
+                result := List.fold_left (fun result (path, der) ->
+                    (Derivation.Left_of {meta=cell; right} :: path, der) :: result
+                  ) !result (get_rightmost_nt l)
+              | rs ->
+                let left = min_sentence l in
+                result := List.fold_left (fun result (path, der) ->
+                    (Derivation.Right_of {meta=cell; left} :: path, der) :: result)
+                    !result rs
+            ) pre post l r;
+          !result
+        | L tr ->
+          match Transition.split grammar tr with
+          | R _ -> []
+          | L _ -> [[], cell]
+      else
+        []
     in
     let marks = Vector.make Reach.Cell.n (ref ()) in
     let mark = ref () in
@@ -1062,7 +1077,15 @@ let derivations =
                  Production.to_string grammar t.reduction.production
                ) path
            ) fringes);
-      let derivations = get_inner_derivations cell in
+      let derivations =
+        get_rightmost_nt cell
+        |> List.concat_map begin fun (path, cell) ->
+          assert (cell_is_reachable cell);
+          List.map
+            (fun derivation -> List.fold_left Derivation.unroll_path derivation path)
+            (get_inner_derivations cell)
+        end
+      in
       List.concat_map begin fun suffix ->
         let end_of_suffix = match suffix with
           | [] -> cell
