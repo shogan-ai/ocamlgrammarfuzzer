@@ -402,6 +402,8 @@ type 'g transition = {
 
 type 'g graph = ('g step, ('g lr1, 'g transition list) indexmap) vector
 
+let step_count gr = Vector.length gr
+
 type ('g, 'cell) label = 'g lr1 index * 'g target indexset * int *
                          'cell index * 'cell index * 'g lr1 indexset
 

@@ -186,6 +186,8 @@ val make
 (** Position in the reduction computation. *)
 type 'g step
 
+val step_count : 'g graph -> 'g step cardinal
+
 (** Graph transition with reachability information.
     - [reached]: Targets reached by this transition
     - [reachable]: All targets reachable through this transition
