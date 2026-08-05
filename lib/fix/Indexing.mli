@@ -84,11 +84,24 @@ val const : int -> (module CARDINAL)
 (**{!Empty} contains a type-level name for the empty set. *)
 module Empty: CARDINAL
 
-(**{!Unit} contains a type-level name for the singleto set. *)
+(**{!Unit} contains a type-level name for the singleton set. *)
 module Unit: sig
   include CARDINAL
   val element : n index
 end
+
+(**{!Opt} adds one element to a set. *)
+module Opt: sig
+  type 'n n
+  val none : 'n n index
+  val some : 'n index -> 'n n index
+
+  val is_none : 'n n index -> bool
+
+  val prj : 'n n index -> 'n index option
+  val cardinal : 'n cardinal -> 'n n cardinal
+end
+type 'n opt = 'n Opt.n
 
 (**[Gensym()] creates an open-ended type-level set, whose cardinality is not
    known a priori. As long as the cardinal of the set has not been observed by
@@ -196,6 +209,8 @@ module Index : sig
      [\[0, n)], in decreasing order. *)
   val rev_iter : 'n cardinal -> ('n index -> unit) -> unit
 
+  val fold : 'n cardinal -> 'acc -> ('acc -> 'n index -> 'acc) -> 'acc
+
   (** [pred i] is the index immediately before [i], if [i] is non-zero *)
   val pred : 'n index -> 'n index option
 
@@ -230,6 +245,9 @@ module Index : sig
   val compare : 'n index -> 'n index -> int
   val minimum : 'n index -> 'n index -> 'n index
   val maximum : 'n index -> 'n index -> 'n index
+
+  val init_seq : 'n cardinal -> ('n index -> 'a) -> 'a Seq.t
+  val rev_init_seq : 'n cardinal -> ('n index -> 'a) -> 'a Seq.t
 end
 
 (**A vector of type [(n, a) vector] is a (fixed-size) array whose indices lie
@@ -263,6 +281,8 @@ module Vector : sig
   (**{!make} is analogous to [Array.make]. Invoking [make n x] fixes the
      cardinal [n]. *)
   val make : 'n cardinal -> 'a -> ('n, 'a) t
+
+  val make_associate : ('n, _) t -> 'a -> ('n, 'a) t
 
   (**[make' n f] is roughly analogous to [make n (f())], but removes the need
      to exhibit a value of type ['a] when [n] is zero. The function call [f()]
@@ -304,6 +324,11 @@ module Vector : sig
   val cast_array : 'n cardinal -> 'a array -> ('n, 'a) t
   val as_array : (_, 'a) t -> 'a array
   val to_list : (_, 'a) t -> 'a list
+
+  val to_seq : (_, 'a) t -> 'a Seq.t
+  val to_seqi : ('n, 'a) t -> ('n index * 'a) Seq.t
+
+  val concat : ('n, 'a) t -> ('m, 'a) t -> (('n, 'm) Sum.n, 'a) t
 
   type 'a packed = Packed : (_, 'a) vector -> 'a packed
   val of_array : 'a array -> 'a packed

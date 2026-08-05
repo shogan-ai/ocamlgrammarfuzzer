@@ -55,6 +55,27 @@ module Unit = struct
   let element = 0
 end
 
+(**{!Opt} adds one element to a set. *)
+module Opt = struct
+  type 'n n = unit
+  let none : 'n n index = 0
+  let some : 'n index -> 'n n index = succ
+
+  let prj = function
+    | 0 -> None
+    | i -> Some (i - 1)
+
+  let is_none x = x = none
+
+  let cardinal (type n) (Cardinal n : n cardinal) =
+    if Lazy.is_val n then
+      let n = 1 + Lazy.force_val n in
+      Cardinal (lazy n)
+    else
+      Cardinal (Lazy.map succ n)
+end
+type 'n opt = 'n Opt.n
+
 module Const (X : sig val cardinal : int end) : CARDINAL = struct
   type n = unit
   let () = assert (X.cardinal >= 0)
@@ -258,6 +279,36 @@ module Index = struct
       yield i
     done
 
+  let fold (n : 'n cardinal) (acc : 'acc) (f : 'acc -> 'n index -> 'acc) =
+    let n = cardinal n in
+    let acc = ref acc in
+    for i = 0 to n - 1 do
+      acc := f !acc i
+    done;
+    !acc
+
+  let seq_init n f =
+    if n < 0 then
+      invalid_arg "seq_init: n < 0"
+    else if n = 0 then
+      Seq.empty
+    else
+      let j = n - 1 in
+      let rec aux i () =
+        if i = j
+        then Seq.Cons (f i, Seq.empty)
+        else Seq.Cons (f i, aux (i + 1))
+      in
+      aux 0
+
+  let init_seq (n : 'n cardinal) f =
+    seq_init (cardinal n) f
+
+  let rev_init_seq (n : 'n cardinal) f =
+    let n = cardinal n in
+    let n' = n - 1 in
+    seq_init n (fun i -> f (n' - i))
+
   exception End_of_set
 
   let enumerate (n : 'n cardinal) : unit -> 'n index =
@@ -325,6 +376,9 @@ module Vector = struct
     match Lazy.force_val n with
     | 0 -> empty
     | n -> Vector (Array.make n (f()))
+
+  let make_associate (type n) (Vector a : (n, _) t) x : (n, _) t =
+    Vector (Array.make (Array.length a) x)
 
   let init (type n) (Cardinal n : n cardinal) f : (n, _) t=
     Vector (Array.init (Lazy.force_val n) f)
@@ -434,6 +488,10 @@ module Vector = struct
 
   let to_list (type n) (Vector a : (n, _) t) = Array.to_list a
 
+  let to_seq (type n) (Vector a : (n, _) t) = Array.to_seq a
+
+  let to_seqi (type n a) (Vector a : (n, a) t) : (n index * a) Seq.t = Array.to_seqi a
+
   let cast_array (type n) (Cardinal n : n cardinal) arr : (n, _) t =
     if Lazy.force_val n <> Array.length arr then
       invalid_arg "Vector.cast_array: incorrect length";
@@ -451,4 +509,8 @@ module Vector = struct
     type a = A.a
     let vector = Vector A.array
   end
+
+  let concat (type n m a) (Vector a : (n, a) t) (Vector b : (m, a) t)
+    : ((n, m) Sum.n, a) t =
+    Vector (Array.concat [a; b])
 end
