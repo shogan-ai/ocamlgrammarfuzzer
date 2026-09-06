@@ -1,6 +1,6 @@
 (**************************************************************************)
 (*                                                                        *)
-(*        OCamlgrammarfuzzer © 2025 by Frédéric Bour, Shogan.ai          *)
+(*        OCamlgrammarfuzzer © 2025 by Frédéric Bour, shogan.ai          *)
 (*                                                                        *)
 (*                     SPDX-License-Identifier: MIT                       *)
 (*                   See the LICENSE file for details.                    *)
@@ -19,6 +19,8 @@ let opt_comments = ref false
 let opt_comments_randomize_whitespace = ref false
 let opt_comments_randomize_count = ref false
 let opt_comments_randomize_length = ref false
+let opt_comments_default_expectation = ref 1.0
+let opt_comments_token_expectation = ref []
 let opt_seed = ref (-1)
 let opt_oxcaml = ref false
 let opt_lr1 = ref false
@@ -83,6 +85,10 @@ let spec_list = [
   ("--comments-randomize-space" , Arg.Set opt_comments_randomize_whitespace, " Randomize whitespace around comments");
   ("--comments-randomize-count" , Arg.Set opt_comments_randomize_count, " Randomize number of comments");
   ("--comments-randomize-length" , Arg.Set opt_comments_randomize_count, " Randomize length of comments");
+  ("--comments-default-expectation" , Arg.Set_float opt_comments_default_expectation,
+   "<float> In --comments-randomize-count mode, the expected number of comments between token");
+  ("--comments-token-expectation" , Arg.String (push opt_comments_token_expectation),
+   "<float> <terminal>... Set the expectation before or after certain tokens");
   ("--print-entrypoint", Arg.Set opt_print_entrypoint, " Prefix every sentence by the entrypoint followed by ':'");
   ("--terminal", Arg.String add_terminal, " Specify how a terminal should be printed; pass '--terminal INT=42' to print INT as '42'");
   (* Ocamlformat invocation setting *)
@@ -387,6 +393,40 @@ let () =
     (List.rev !opt_weights);
   List.iter (fun spec -> process_weight (0.0, parse_pattern spec))
     (List.rev !opt_avoid)
+
+(* Parse token expectations *)
+
+let expectations = Vector.make (Terminal.cardinal grammar) !opt_comments_default_expectation
+
+let () =
+  List.iter begin fun spec ->
+    match String.split_on_char ' ' spec with
+    | [] -> assert false
+    | x :: xs ->
+      match float_of_string_opt x with
+      | None ->
+        Printf.eprintf "--comments-token-expectation %S: expecting a number, got %S"
+          spec x;
+        exit 1
+      | Some weight ->
+        List.iter begin function
+          | "" -> ()
+          | term ->
+            match Transl.Indices.find_symbol symbol_index (Syntax.Name term) with
+            | None ->
+              Printf.eprintf "--comments-token-expectation %S: unknown terminal %S"
+                spec x;
+              exit 1
+            | Some sym ->
+              match Symbol.desc grammar sym with
+              | N _ ->
+                Printf.eprintf "--comments-token-expectation %S: %S is a non-terminal"
+                  spec x;
+                exit 1
+              | T t ->
+                expectations.:(t) <- weight
+        end xs
+  end !opt_comments_token_expectation
 
 (* Compute reachability, considering only productions with strictly positive
    weights. *)
@@ -1006,6 +1046,7 @@ end = struct
     mutable comments: int;
     mutable token_locations: location list;
     mutable comment_locations: location list;
+    mutable prev_term: g terminal index option;
   }
 
   let make ~with_padding ~with_comments () = {
@@ -1015,6 +1056,7 @@ end = struct
     buffer = Buffer.create 63;
     token_locations = [];
     comment_locations = [];
+    prev_term = None;
   }
 
   let startp kind t =
@@ -1033,10 +1075,29 @@ end = struct
   let randomize_comments t ~seed =
     t.randomize_comments <- Some (0, Random.State.make [|opt_seed;seed|])
 
-  let randomize_count t =
+  let sample_poisson t lam =
+    let l = exp (-.lam) in
+    let rec loop k p =
+      let p = p *. Random.State.float t 1.0 in if p <= l then
+        k
+      else
+        loop (k + 1) p
+    in
+    let result = loop 0 1.0 in
+    (*Printf.eprintf "poisson! %f = %d\n" lam result;*)
+    result
+
+  let randomize_count t term =
     match t.randomize_comments with
     | Some (_, rng) when !opt_comments_randomize_count ->
-      Random.State.int rng 4
+      let expectation = match t.prev_term, term with
+        | None, None -> !opt_comments_default_expectation
+        | None, Some t | Some t, None ->
+          expectations.:(t)
+        | Some t1, Some t2 ->
+          Float.max expectations.:(t1) expectations.:(t2)
+      in
+      sample_poisson rng expectation
     | _ -> 1
 
   let randomize_comment t =
@@ -1074,14 +1135,14 @@ end = struct
     | _ -> ()
 
 
-  let add_comment kind t =
+  let add_comment kind t term =
     match kind, t.comments with
     | `Regular, -1 | `Suffix, _  -> ()
     | `Regular, number ->
-      for _ = 1 to randomize_count t do
+      for _ = 1 to randomize_count t term do
         t.comments <- number + 1;
         let startp = startp kind t in
-        let before, after = randomize_comment t in
+        let before, after = randomize_comment_space t in
         Printf.bprintf t.buffer "%s(*%aC%d%a*)%s" before randomize_length t number randomize_length t after;
         let endp = endp t in
         t.comment_locations <- (startp, endp) :: t.comment_locations
@@ -1089,14 +1150,16 @@ end = struct
 
   let add_terminal ~gensym t term =
     let printer, kind = terminal_text.:(term) in
-    match printer gensym with
+    begin match printer gensym with
     | "" -> ()
     | text ->
-      add_comment kind t;
+      add_comment kind t (Some term);
       let startp = startp kind t in
       Buffer.add_string t.buffer text;
       let endp = endp t in
       t.token_locations <- (startp, endp) :: t.token_locations
+    end;
+    t.prev_term <- Some term
 
   type source = string
 
@@ -1106,7 +1169,7 @@ end = struct
   }
 
   let flush_source t =
-    add_comment `Regular t;
+    add_comment `Regular t None;
     let source = Buffer.contents t.buffer in
     source
 
@@ -1135,7 +1198,7 @@ end = struct
     source*)
 
   let flush_only_source_to_channel t oc =
-    add_comment `Regular t;
+    add_comment `Regular t None;
     Buffer.output_buffer oc t.buffer;
     reset t
 
