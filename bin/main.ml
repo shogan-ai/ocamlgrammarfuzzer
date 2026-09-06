@@ -84,7 +84,7 @@ let spec_list = [
   ("--comments" , Arg.Set opt_comments , " Generate fake comments in the lines");
   ("--comments-randomize-space" , Arg.Set opt_comments_randomize_whitespace, " Randomize whitespace around comments");
   ("--comments-randomize-count" , Arg.Set opt_comments_randomize_count, " Randomize number of comments");
-  ("--comments-randomize-length" , Arg.Set opt_comments_randomize_count, " Randomize length of comments");
+  ("--comments-randomize-length" , Arg.Set opt_comments_randomize_length, " Randomize length of comments");
   ("--comments-default-expectation" , Arg.Set_float opt_comments_default_expectation,
    "<float> In --comments-randomize-count mode, the expected number of comments between token");
   ("--comments-token-expectation" , Arg.String (push opt_comments_token_expectation),
