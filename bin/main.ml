@@ -1100,11 +1100,10 @@ end = struct
       sample_poisson rng expectation
     | _ -> 1
 
-  let randomize_comment t =
+  let randomize_comment_space t =
     match t.randomize_comments with
-    | None -> ("", "")
-    | Some (indent, rng) ->
-      match Random.State.int rng 10 with
+    | Some (indent, rng) when !opt_comments_randomize_whitespace ->
+      begin match Random.State.int rng 10 with
       | 9 ->
         (* Special case: newlines and indentation *)
         let indent = indent + 1 in
@@ -1120,6 +1119,8 @@ end = struct
         let before = newlines (n mod 3) in
         let after = newlines (n / 3) in
         (before, after)
+      end
+    | _ -> ("", "")
 
   let spacer = String.make 40 '-'
 
@@ -1327,7 +1328,10 @@ let derivation_kind der =
     Ocamlformat.Impl
 
 let randomize_printer printer index =
-  if !opt_comments_randomize_whitespace then
+  if !opt_comments_randomize_whitespace ||
+     !opt_comments_randomize_count ||
+     !opt_comments_randomize_length
+  then
     Source_printer.randomize_comments printer ~seed:index
 
 let prepare_derivation_for_check printer index der =
