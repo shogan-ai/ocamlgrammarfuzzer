@@ -38,6 +38,7 @@ let opt_batch_size = ref 400
 let opt_terminals = ref []
 let opt_cmly = ref ""
 let opt_print_derivations = ref []
+let opt_zero_delimiter = ref false
 
 let opt_save_report = ref "-"
 let opt_save_successful = ref ""
@@ -121,9 +122,10 @@ let spec_list = [
   ("--regressions-not-fatal"    , Arg.Set opt_regressions_non_fatal,
    " Exit code should not be affected by a regression.");
   (* Misc *)
-  ("-v"         , Arg.Unit (fun () -> incr Misc.verbosity_level), " Increase verbosity");
+  ("-v", Arg.Unit (fun () -> incr Misc.verbosity_level), " Increase verbosity");
   ("--print-derivation", Arg.String (push opt_print_derivations), "<sentence> Print the grammatical derivation of a sentence");
   ("--debug-log-output", Arg.Set opt_debug_log_output, " Log output of ocamlformat for debug purpose");
+  ("-0", Arg.Set opt_zero_delimiter, " In print mode, output \\0 after each sentence");
 ]
 
 let usage_msg = "Usage: ocamlgrammarfuzzer [options]"
@@ -1692,7 +1694,9 @@ let print_mode () =
     randomize_printer printer index;
     Derivation.iter_terminals ~f:(Source_printer.add_terminal ~gensym:(gensym()) printer) der;
     Source_printer.flush_only_source_to_channel printer stdout;
-    output_char stdout '\n'
+    output_char stdout '\n';
+    if !opt_zero_delimiter then
+      output_char stdout '\000';
   end derivations
 
 (* check mode: stress ocamlformat, classify outputs *)
