@@ -869,6 +869,45 @@ let derivations =
           ~from:(sample_list rng entrypoints)
           ~length:!opt_length rng
         in
+        if false then (
+          let classes = Hashtbl.create 7 in
+          let reg_set set =
+            match Hashtbl.find_opt classes set with
+            | Some i -> i
+            | None ->
+              let i = Hashtbl.length classes in
+              Hashtbl.add classes set i;
+              i
+          in
+          let annotate_cell cell =
+            let n, pre, post = Reach.Cell.decode cell in
+            let pre = reg_set (Reach.Tree.pre_classes n).(pre) in
+            let post = reg_set (Reach.Tree.post_classes n).(post) in
+            let pre = "#" ^ string_of_int pre in
+            let post = "#" ^ string_of_int post in
+            if false then
+              begin match Reach.Tree.split n with
+                | R _ -> (pre, post)
+                | L tr ->
+                  let source = Lr1.to_string grammar (Transition.source grammar tr) in
+                  let target = Lr1.to_string grammar (Transition.target grammar tr) in
+                  source ^ " @ " ^ pre,
+                  target ^ " @ " ^ post
+              end
+            else
+              (pre, post)
+          in
+          let printable = Derivation.print grammar annotate_cell sentence in
+          Derivation_printer.output stderr printable;
+          let arr =
+            Array.of_seq (Seq.map (fun (a, b) -> (b, a)) (Hashtbl.to_seq classes))
+          in
+          Array.sort compare arr;
+          Array.iter begin fun (i, set) ->
+            Printf.eprintf "#%d -> %s\n"
+              i (string_of_indexset ~index:(Terminal.to_string grammar) set)
+          end arr;
+        );
         sentence
       )
   | focus ->
