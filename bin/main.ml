@@ -66,8 +66,9 @@ let set_check = function
   | "stylo" -> opt_check := `Stylo
   | "ocamlformat" -> opt_check := `OCamlformat
   | "tree-sitter" -> opt_check := `Treesitter
+  | "ocaml"  -> opt_check := `OCaml
   | other ->
-    raise (Arg.Bad (Printf.sprintf "unknown checker %S, valid values are stylo, ocamlformat or tree-sitter" other))
+    raise (Arg.Bad (Printf.sprintf "unknown checker %S, valid values are stylo, ocamlformat, ocaml or tree-sitter" other))
 
 let spec_list = [
   (* Controlling generation *)
@@ -98,7 +99,7 @@ let spec_list = [
   ("--batch-size", Arg.Set_int opt_batch_size, "<int> Number of files to submit to each ocamlformat process (default: 400)");
   (* Check mode *)
   ("--check"                    , Arg.String set_check, "<ocamlformat|stylo|tree-sitter> Check mode: submit generated sentences to a formatter");
-  ("--check-command"            , Arg.String (fun s -> opt_check_command := Some s), "<path> Formatter binary to fuzz (default: ocamlformat, tree-sitter or stylo)");
+  ("--check-command"            , Arg.String (fun s -> opt_check_command := Some s), "<path> Formatter binary to fuzz (default: ocamlformat, tree-sitter, ocaml or stylo)");
   ("--check-command-extra-arg"  , Arg.String (push opt_check_command_extra_args), "<arg> Extra argument to pass to the fuzzed binary (can be passed multiple times)");
   ("--save-report-to"           , Arg.Set_string opt_save_report, "<path> In check mode, classify and report detected problems to a file (default to stdout)");
   ("--max-report"               , Arg.Set_int opt_max_errors_report, "<int> Maximum number of derivations to report per error (default: 20)");
@@ -563,38 +564,23 @@ let min_sentence =
   fun cell -> Lazy.force solve cell
 
 let ocamlformat_check inputs =
-  match !opt_check with
-  | `OCamlformat ->
-    Ocamlformat.check
-      ?command:!opt_check_command
-      ~extra_args:!opt_check_command_extra_args
-      ~jobs:(Int.max 0 !opt_jobs)
-      ~batch_size:(Int.max 1 !opt_batch_size)
-      ?debug_line:(if !opt_debug_log_output then
-        Some prerr_endline
-      else None)
-      inputs
-  | `Treesitter ->
-    Treesitter.check
-      ?command:!opt_check_command
-      ~extra_args:!opt_check_command_extra_args
-      ~jobs:(Int.max 0 !opt_jobs)
-      ~batch_size:(Int.max 1 !opt_batch_size)
-      ?debug_line:(if !opt_debug_log_output then
-        Some prerr_endline
-      else None)
-      inputs
-  | `Stylo ->
-    Stylo.check
-      ?command:!opt_check_command
-      ~extra_args:!opt_check_command_extra_args
-      ~jobs:(Int.max 0 !opt_jobs)
-      ~batch_size:(Int.max 1 !opt_batch_size)
-      ?debug_line:(if !opt_debug_log_output then
-        Some prerr_endline
-      else None)
-      inputs
-  | `None -> assert false
+  let check =
+    match !opt_check with
+    | `OCaml -> Ocaml_check.check
+    | `OCamlformat -> Ocamlformat.check
+    | `Treesitter -> Treesitter.check
+    | `Stylo -> Stylo.check
+    | `None -> assert false
+  in
+  check
+    ?command:!opt_check_command
+    ~extra_args:!opt_check_command_extra_args
+    ~jobs:(Int.max 0 !opt_jobs)
+    ~batch_size:(Int.max 1 !opt_batch_size)
+    ?debug_line:(if !opt_debug_log_output then
+                   Some prerr_endline
+                 else None)
+    inputs
 
 let rec simple_reducer test (der : (g, Reach.r, Reach.Cell.n index) Derivation.t) =
   match der.desc with
