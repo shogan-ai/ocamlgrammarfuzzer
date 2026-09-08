@@ -142,9 +142,7 @@ let opt_seed = match !opt_seed with
   | -1 ->
     Random.self_init ();
     Random.bits ()
-  | n ->
-    Random.init n;
-    n
+  | n -> n
 
 (* Load and preprocess the grammar *)
 
@@ -444,11 +442,11 @@ let () = stopwatch 1 "reachability (%d cells)" (cardinal Reach.Cell.n)
 
 (* Naive fuzzing *)
 
-let sample_list = function
+let sample_list rng = function
   | [] -> failwith "empty list"
   | l ->
   let total = List.fold_left (fun sum (_, w) -> sum +. w) 0.0 l in
-  let sample = ref (Random.float total) in
+  let sample = ref (Random.State.float rng total) in
   fst (List.find (fun (_, w) ->
       sample := !sample -. w;
       !sample <= 0.0
@@ -627,7 +625,7 @@ let reduce_with_ocamlformat ~print der =
    actual number of terminals.
 *)
 
-let rec fuzz size0 cell =
+let rec fuzz rng size0 cell =
   let current_cost = Reach.Analysis.cost cell in
   assert (current_cost < max_int);
   let size = Int.max size0 current_cost in
@@ -654,7 +652,7 @@ let rec fuzz size0 cell =
               if Reach.Analysis.cost cr < max_int then
                 push candidates ((cl, cr), 1.0)
         );
-    let (cl, cr) = sample_list !candidates in
+    let (cl, cr) = sample_list rng !candidates in
     let sl = Reach.Analysis.cost cl in
     let sr = Reach.Analysis.cost cr in
     let size = size - sl - sr in
@@ -664,16 +662,17 @@ let rec fuzz size0 cell =
       else if Reach.Analysis.finite cr then
         size
       else
-        (Random.int (size + 1) + Random.int (size + 1)) / 2
+        (Random.State.int rng (size + 1) +
+         Random.State.int rng (size + 1)) / 2
     in
-    let left = fuzz (sl + mid) cl in
+    let left = fuzz rng (sl + mid) cl in
     (* Bias right side:
        - first set an expectation on the position of the split
          between left and right side,
        - generate left side targetting the split position
        - compensate on right side if left side missed expectation
     *)
-    let right = fuzz (size - Derivation.length left) cr in
+    let right = fuzz rng (size - Derivation.length left) cr in
     Derivation.node cell left right
   | L tr ->
     match Transition.split grammar tr with
@@ -716,10 +715,10 @@ let rec fuzz size0 cell =
               push candidates (Some (reduction, cell),
                                weights.:(reduction.production))
           );
-        match sample_list !candidates with
+        match sample_list rng !candidates with
         | None -> Derivation.null cell
         | Some (reduction, cell') ->
-          Derivation.expand cell (fuzz size cell') reduction
+          Derivation.expand cell (fuzz rng size cell') reduction
 
 let plural = function
   | [] | [_] -> ""
@@ -828,7 +827,7 @@ let gensym () =
 
 let terminal_text = Token_printer.for_grammar grammar !opt_terminals
 
-let generate_sentence ?(length=100) ?from () =
+let generate_sentence ?(length=100) ?from rng =
   let tr = match from with
     | None -> IndexSet.choose (Transition.accepting grammar)
     | Some tr -> tr
@@ -838,7 +837,7 @@ let generate_sentence ?(length=100) ?from () =
   assert (Array.length (Reach.Classes.post_transition tr) = 1);
   let node = Reach.Tree.leaf tr in
   let cell = Reach.Cell.encode node ~pre:0 ~post:0 in
-  fuzz length cell
+  fuzz rng length cell
 
 let derivations =
   let entrypoints =
@@ -851,10 +850,13 @@ let derivations =
       | 0 when [] = !opt_print_derivations -> 1
       | n -> n
     in
-    Seq.init count (fun _ ->
-        generate_sentence
-          ~from:(sample_list entrypoints)
-          ~length:!opt_length ()
+    Seq.init count (fun index ->
+        let rng = Random.State.make [|opt_seed+1;index|] in
+        let sentence = generate_sentence
+          ~from:(sample_list rng entrypoints)
+          ~length:!opt_length rng
+        in
+        sentence
       )
   | focus ->
     let todo = Boolvector.make Reach.Cell.n !opt_exhaust in
@@ -938,11 +940,11 @@ let derivations =
       Boolvector.clear todo (Derivation.meta der);
       Derivation.iter_sub mark_derivation der
     in
-    let gen_cell length cell =
+    let gen_cell rng length cell =
       let der =
         if !opt_exhaust
         then min_sentence cell
-        else fuzz length cell
+        else fuzz rng length cell
       in
       der
     in
@@ -956,13 +958,14 @@ let derivations =
         -> next_cell ()
       | cell ->
         let length = ref !opt_length in
+        let rng = Random.State.make [|opt_seed+1;Index.to_int cell|] in
         let gen_path_component cell =
-          let der = gen_cell 0 cell in
+          let der = gen_cell rng 0 cell in
           length := !length - Derivation.length der;
           der
         in
         let path = List.map (Derivation.map_path gen_path_component) (snd bfs.:(cell)) in
-        let leaf = gen_cell !length cell in
+        let leaf = gen_cell rng !length cell in
         let der = List.fold_left Derivation.unroll_path leaf path in
         mark_derivation der;
         Seq.Cons (der, next_cell)
