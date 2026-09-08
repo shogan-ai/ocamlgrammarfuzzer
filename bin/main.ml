@@ -638,20 +638,21 @@ let rec fuzz size0 cell =
     iter_sub_nodes i_pre i_post l r ~f:(fun cl ->
         let l_cost = Reach.Analysis.cost cl in
         if l_cost = max_int then
-          fun _ -> ()
+          ignore
         else
           fun cr ->
             let r_cost = Reach.Analysis.cost cr in
             if r_cost < max_int && l_cost + r_cost <= size then
               push candidates ((cl, cr), 1.0)
       );
-    if [] = !candidates then
+    if List.is_empty !candidates then
       iter_sub_nodes i_pre i_post l r ~f:(fun cl ->
-          let l_cost = Reach.Analysis.cost cl in
-          fun cr ->
-            let r_cost = Reach.Analysis.cost cr in
-            if l_cost < max_int && r_cost < max_int then
-              push candidates ((cl, cr), 1.0)
+          if Reach.Analysis.cost cl < max_int then
+            ignore
+          else
+            fun cr ->
+              if Reach.Analysis.cost cr < max_int then
+                push candidates ((cl, cr), 1.0)
         );
     let (cl, cr) = sample_list !candidates in
     let sl = Reach.Analysis.cost cl in
@@ -717,8 +718,8 @@ let rec fuzz size0 cell =
           );
         match sample_list !candidates with
         | None -> Derivation.null cell
-        | Some (reduction, cell) ->
-          Derivation.expand cell (fuzz size cell) reduction
+        | Some (reduction, cell') ->
+          Derivation.expand cell (fuzz size cell') reduction
 
 let plural = function
   | [] | [_] -> ""
