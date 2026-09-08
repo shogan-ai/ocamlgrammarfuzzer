@@ -89,11 +89,6 @@ let consume_batch ?(debug_line=ignore) ~consume ~pack = function
   | None -> Seq.empty
   | Some (files, (_, _, pstderr as process)) ->
     let errors = ref [] in
-    let flush = function
-      | None -> ()
-      | Some (filename, location) ->
-        push errors (filename, error ~location "")
-    in
     let parse_lines acc line =
       debug_line line;
       match parse_line line with
@@ -105,11 +100,10 @@ let consume_batch ?(debug_line=ignore) ~consume ~pack = function
         end;
         None
       | `File (filename, line, start_col, end_col) ->
-        flush acc;
         Some (filename, {line; start_col; end_col})
       | `None -> acc
     in
-    flush (In_channel.fold_lines parse_lines None pstderr);
+    ignore (In_channel.fold_lines parse_lines None pstderr);
     ignore (Unix.close_process_full process);
     let files = Array.of_list (List.map consume files) in
     let answer = Array.make (Array.length files) [] in
