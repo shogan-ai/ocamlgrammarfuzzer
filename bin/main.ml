@@ -32,6 +32,7 @@ let opt_focus = ref []
 let opt_exhaust = ref false
 let opt_check = ref `None
 let opt_check_command = ref None
+let opt_check_command_extra_args = ref []
 let opt_max_errors_report = ref 20
 let opt_jobs = ref 8
 let opt_batch_size = ref 400
@@ -98,6 +99,7 @@ let spec_list = [
   (* Check mode *)
   ("--check"                    , Arg.String set_check, "<ocamlformat|stylo|tree-sitter> Check mode: submit generated sentences to a formatter");
   ("--check-command"            , Arg.String (fun s -> opt_check_command := Some s), "<path> Formatter binary to fuzz (default: ocamlformat, tree-sitter or stylo)");
+  ("--check-command-extra-arg"  , Arg.String (push opt_check_command_extra_args), "<arg> Extra argument to pass to the fuzzed binary (can be passed multiple times)");
   ("--save-report-to"           , Arg.Set_string opt_save_report, "<path> In check mode, classify and report detected problems to a file (default to stdout)");
   ("--max-report"               , Arg.Set_int opt_max_errors_report, "<int> Maximum number of derivations to report per error (default: 20)");
   ("--save-successful-to"       , Arg.Set_string opt_save_successful, "<path> In check mode, save successful sentences to a file");
@@ -565,6 +567,7 @@ let ocamlformat_check inputs =
   | `OCamlformat ->
     Ocamlformat.check
       ?command:!opt_check_command
+      ~extra_args:!opt_check_command_extra_args
       ~jobs:(Int.max 0 !opt_jobs)
       ~batch_size:(Int.max 1 !opt_batch_size)
       ?debug_line:(if !opt_debug_log_output then
@@ -574,6 +577,7 @@ let ocamlformat_check inputs =
   | `Treesitter ->
     Treesitter.check
       ?command:!opt_check_command
+      ~extra_args:!opt_check_command_extra_args
       ~jobs:(Int.max 0 !opt_jobs)
       ~batch_size:(Int.max 1 !opt_batch_size)
       ?debug_line:(if !opt_debug_log_output then
@@ -583,6 +587,7 @@ let ocamlformat_check inputs =
   | `Stylo ->
     Stylo.check
       ?command:!opt_check_command
+      ~extra_args:!opt_check_command_extra_args
       ~jobs:(Int.max 0 !opt_jobs)
       ~batch_size:(Int.max 1 !opt_batch_size)
       ?debug_line:(if !opt_debug_log_output then

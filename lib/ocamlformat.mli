@@ -26,6 +26,7 @@ type source_kind =
 
 val check :
   ?command:string ->
+  ?extra_args:string list ->
   ?jobs:int ->
   ?batch_size:int ->
   ?debug_line:(string -> unit) ->

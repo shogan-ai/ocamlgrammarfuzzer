@@ -382,6 +382,7 @@ let overlapping_force jobs seq =
 
 let check
     ?(command="ocamlformat")
+    ?(extra_args=[])
     ?(jobs=0) ?(batch_size=default_batch_size)
     ?debug_line
     seq
@@ -391,7 +392,8 @@ let check
   batch_by ~size:batch_size
   |> (* Launch a process for each batch *)
   Seq.map (start_batch ?debug_line ~command
-             ~args:["--check"; "--enable-outside-detected-project"])
+             ~args:("--check" :: "--enable-outside-detected-project"
+                    :: extra_args))
   |> (* Force sequence enough items ahead to kick [jobs] processes ahead *)
   overlapping_force jobs
   |> (* Collect the results *)
