@@ -799,8 +799,11 @@ let make (type g) ?(avoid=fun _ -> false) (g : g grammar) : g _t = (module struc
 
     let encode i =
       let first = first_cell.:(i) in
+      let pre_count = Tree.pre_count i in
       let post_count = Tree.post_count i in
       fun ~pre ~post ->
+        assert (pre < pre_count);
+        assert (post < post_count);
         Index.of_int n (first + pre * post_count + post)
 
     let iter_node i f =

@@ -459,16 +459,25 @@ let iter_sub_nodes ~f i_pre i_post l r =
   in
   let l_index = Reach.Cell.encode l in
   let r_index = Reach.Cell.encode r in
-  Array.iteri begin fun i_post_l all_pre_r ->
-    let cl = l_index ~pre:i_pre ~post:i_post_l in
-    let l_cost = Reach.Analysis.cost cl in
-    if l_cost < max_int then
-      let f' = f cl in
-      Array.iter begin fun i_pre_r ->
+  if true then
+    Array.iteri begin fun i_pre_r i_post_l ->
+      let cl = l_index ~pre:i_pre ~post:i_post_l in
+      if Reach.Analysis.cost cl < max_int then
         let cr = r_index ~pre:i_pre_r ~post:i_post in
-        f' cr
-      end all_pre_r
-  end coercion.Reachability.Coercion.forward
+        if Reach.Analysis.cost cr < max_int then
+          f cl cr
+    end coercion.Reachability.Coercion.backward
+  else
+    Array.iteri begin fun i_post_l all_pre_r ->
+      let cl = l_index ~pre:i_pre ~post:i_post_l in
+      if Reach.Analysis.cost cl < max_int then
+        let f' = f cl in
+        Array.iter begin fun i_pre_r ->
+          let cr = r_index ~pre:i_pre_r ~post:i_post in
+          if Reach.Analysis.cost cr < max_int then
+            f' cr
+        end all_pre_r
+    end coercion.Reachability.Coercion.forward
 
 let iter_eqns ~f i_pre i_post goto =
   let tr = Transition.of_goto grammar goto in
@@ -491,9 +500,13 @@ let iter_eqns ~f i_pre i_post goto =
            the mapping between the parent node and this
            sub-node *)
         let pred_pre _ c_pre' =
-          IndexSet.quick_subset c_pre' c_pre
+          let result = IndexSet.quick_subset c_pre' c_pre in
+          if result then assert (IndexSet.subset c_pre' c_pre);
+          result
         and pred_post _ c_post' =
-          IndexSet.quick_subset c_post c_post'
+          let result = IndexSet.quick_subset c_post c_post' in
+          if result then assert (IndexSet.subset c_post c_post');
+          result
         in
         match
           Misc.array_findi pred_pre 0 pre',
@@ -686,9 +699,9 @@ let rec fuzz rng size0 cell =
       let c_post = (Reach.Tree.post_classes node).(i_post) in
       let nullable =
         (* Check if a nullable reduction is possible *)
-        not (IndexSet.is_empty eqns.nullable_lookaheads) &&
-        IndexSet.quick_subset c_post eqns.nullable_lookaheads &&
-        not (IndexSet.disjoint c_pre c_post)
+        not (IndexSet.disjoint
+               eqns.nullable_lookaheads
+               (IndexSet.inter c_pre c_post))
       in
       if size <= 0 && nullable then
         Derivation.null cell
@@ -697,7 +710,7 @@ let rec fuzz rng size0 cell =
             (* Compute weight of nullable case *)
             let weight =
               List.fold_left (fun acc (reduction : _ Reachability.reduction) ->
-                  if IndexSet.quick_subset c_post reduction.lookahead
+                  if IndexSet.subset c_post reduction.lookahead
                   then acc +. weights.:(reduction.production)
                   else acc
                 ) 0.0 eqns.nullable
