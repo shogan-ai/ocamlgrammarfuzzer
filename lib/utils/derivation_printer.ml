@@ -172,10 +172,12 @@ let add_node t (column, next) node =
     if node.child_width > 0 then (
       let delta = (node.child_width - node.width) / 2 in
       Padbuf.pad t.table (column - delta) " ";
+      Padbuf.add_unicode t.table 1 "└";
       Padbuf.pad t.table (column + node.width / 2) "─";
       if node.label <> "" then
         Padbuf.add_unicode t.table 1 "┬";
-      Padbuf.pad t.table (column - delta + node.child_width) "─";
+      Padbuf.pad t.table (column - delta + node.child_width - 1) "─";
+      Padbuf.add_unicode t.table 1 "┘";
       (column - delta, node.child) :: next
     ) else
       next
