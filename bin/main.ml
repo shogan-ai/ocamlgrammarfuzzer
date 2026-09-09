@@ -685,27 +685,28 @@ let rec fuzz rng size0 cell =
       let c_pre = (Reach.Tree.pre_classes node).(i_pre) in
       let c_post = (Reach.Tree.post_classes node).(i_post) in
       let nullable =
-        (* Check if a nullable reduction is possible *)
-        not (IndexSet.is_empty eqns.nullable_lookaheads) &&
-        IndexSet.quick_subset c_post eqns.nullable_lookaheads &&
-        not (IndexSet.disjoint c_pre c_post)
+        IndexSet.subset c_post c_pre &&
+        IndexSet.subset c_post eqns.nullable_lookaheads
       in
       if size <= 0 && nullable then
         Derivation.null cell
       else
         let candidates = ref (
             (* Compute weight of nullable case *)
-            let weight =
+            if nullable then
+              let weight =
               List.fold_left (fun acc (reduction : _ Reachability.reduction) ->
-                  if IndexSet.quick_subset c_post reduction.lookahead
-                  then acc +. weights.:(reduction.production)
-                  else acc
-                ) 0.0 eqns.nullable
-            in
-            if weight > 0.0 then
-              (* Weight again by the targeted size: avoid selecting null case
-                 when a lot of tokens are expected *)
-              [None, weight /. float (Int.max 1 size)]
+                    if IndexSet.disjoint c_post reduction.lookahead
+                    then acc
+                    else acc +. weights.:(reduction.production)
+                  ) 0.0 eqns.nullable
+              in
+              if weight > 0.0 then
+                (* Weight again by the targeted size: avoid selecting null case
+                   when a lot of tokens are expected *)
+                [None, weight /. float (Int.max 1 size)]
+              else
+                []
             else
               []
           ) in
