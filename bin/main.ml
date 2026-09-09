@@ -14,6 +14,7 @@ open Misc
 open Grammarfuzzer
 
 let opt_count = ref 0
+let opt_offset = ref 0
 let opt_length = ref 100
 let opt_comments = ref false
 let opt_comments_randomize_whitespace = ref false
@@ -128,6 +129,7 @@ let spec_list = [
   ("-v", Arg.Unit (fun () -> incr Misc.verbosity_level), " Increase verbosity");
   ("--print-derivation", Arg.String (push opt_print_derivations), "<sentence> Print the grammatical derivation of a sentence");
   ("--debug-log-output", Arg.Set opt_debug_log_output, " Log output of ocamlformat for debug purpose");
+  ("--debug-gen-offset", Arg.Set_int opt_offset, "<int> Skip the first <n> generated lines (for debug purpose)"  );
   ("-0", Arg.Set opt_zero_delimiter, " In print mode, output \\0 after each sentence");
 ]
 
@@ -852,7 +854,7 @@ let derivations =
       | n -> n
     in
     Seq.init count (fun index ->
-        let rng = Random.State.make [|opt_seed+1;index|] in
+        let rng = Random.State.make [|opt_seed+1;!opt_offset+index|] in
         let sentence = generate_sentence
           ~from:(sample_list rng entrypoints)
           ~length:!opt_length rng
@@ -1330,7 +1332,7 @@ let randomize_printer printer index =
      !opt_comments_randomize_count ||
      !opt_comments_randomize_length
   then
-    Source_printer.randomize_comments printer ~seed:index
+    Source_printer.randomize_comments printer ~seed:(!opt_offset + index)
 
 let prepare_derivation_for_check printer index der =
   randomize_printer printer index;
