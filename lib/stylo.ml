@@ -15,7 +15,7 @@ let input_line ?(debug=ignore) ic =
   debug result;
   result
 
-let default_batch_size = 80
+let default_batch_size = 300
 
 let temp_dir = Filename.get_temp_dir_name ()
 
