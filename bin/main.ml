@@ -459,25 +459,16 @@ let iter_sub_nodes ~f i_pre i_post l r =
   in
   let l_index = Reach.Cell.encode l in
   let r_index = Reach.Cell.encode r in
-  if true then
-    Array.iteri begin fun i_pre_r i_post_l ->
-      let cl = l_index ~pre:i_pre ~post:i_post_l in
-      if Reach.Analysis.cost cl < max_int then
+  Array.iteri begin fun i_post_l all_pre_r ->
+    let cl = l_index ~pre:i_pre ~post:i_post_l in
+    let l_cost = Reach.Analysis.cost cl in
+    if l_cost < max_int then
+      let f' = f cl in
+      Array.iter begin fun i_pre_r ->
         let cr = r_index ~pre:i_pre_r ~post:i_post in
-        if Reach.Analysis.cost cr < max_int then
-          f cl cr
-    end coercion.Reachability.Coercion.backward
-  else
-    Array.iteri begin fun i_post_l all_pre_r ->
-      let cl = l_index ~pre:i_pre ~post:i_post_l in
-      if Reach.Analysis.cost cl < max_int then
-        let f' = f cl in
-        Array.iter begin fun i_pre_r ->
-          let cr = r_index ~pre:i_pre_r ~post:i_post in
-          if Reach.Analysis.cost cr < max_int then
-            f' cr
-        end all_pre_r
-    end coercion.Reachability.Coercion.forward
+        f' cr
+      end all_pre_r
+  end coercion.Reachability.Coercion.forward
 
 let iter_eqns ~f i_pre i_post goto =
   let tr = Transition.of_goto grammar goto in
@@ -500,13 +491,9 @@ let iter_eqns ~f i_pre i_post goto =
            the mapping between the parent node and this
            sub-node *)
         let pred_pre _ c_pre' =
-          let result = IndexSet.quick_subset c_pre' c_pre in
-          if result then assert (IndexSet.subset c_pre' c_pre);
-          result
+          IndexSet.quick_subset c_pre' c_pre
         and pred_post _ c_post' =
-          let result = IndexSet.quick_subset c_post c_post' in
-          if result then assert (IndexSet.subset c_post c_post');
-          result
+          IndexSet.quick_subset c_post c_post'
         in
         match
           Misc.array_findi pred_pre 0 pre',
@@ -699,9 +686,9 @@ let rec fuzz rng size0 cell =
       let c_post = (Reach.Tree.post_classes node).(i_post) in
       let nullable =
         (* Check if a nullable reduction is possible *)
-        not (IndexSet.disjoint
-               eqns.nullable_lookaheads
-               (IndexSet.inter c_pre c_post))
+        not (IndexSet.is_empty eqns.nullable_lookaheads) &&
+        IndexSet.quick_subset c_post eqns.nullable_lookaheads &&
+        not (IndexSet.disjoint c_pre c_post)
       in
       if size <= 0 && nullable then
         Derivation.null cell
@@ -710,7 +697,7 @@ let rec fuzz rng size0 cell =
             (* Compute weight of nullable case *)
             let weight =
               List.fold_left (fun acc (reduction : _ Reachability.reduction) ->
-                  if IndexSet.subset c_post reduction.lookahead
+                  if IndexSet.quick_subset c_post reduction.lookahead
                   then acc +. weights.:(reduction.production)
                   else acc
                 ) 0.0 eqns.nullable
@@ -869,45 +856,6 @@ let derivations =
           ~from:(sample_list rng entrypoints)
           ~length:!opt_length rng
         in
-        if false then (
-          let classes = Hashtbl.create 7 in
-          let reg_set set =
-            match Hashtbl.find_opt classes set with
-            | Some i -> i
-            | None ->
-              let i = Hashtbl.length classes in
-              Hashtbl.add classes set i;
-              i
-          in
-          let annotate_cell cell =
-            let n, pre, post = Reach.Cell.decode cell in
-            let pre = reg_set (Reach.Tree.pre_classes n).(pre) in
-            let post = reg_set (Reach.Tree.post_classes n).(post) in
-            let pre = "#" ^ string_of_int pre in
-            let post = "#" ^ string_of_int post in
-            if false then
-              begin match Reach.Tree.split n with
-                | R _ -> (pre, post)
-                | L tr ->
-                  let source = Lr1.to_string grammar (Transition.source grammar tr) in
-                  let target = Lr1.to_string grammar (Transition.target grammar tr) in
-                  source ^ " @ " ^ pre,
-                  target ^ " @ " ^ post
-              end
-            else
-              (pre, post)
-          in
-          let printable = Derivation.print grammar annotate_cell sentence in
-          Derivation_printer.output stderr printable;
-          let arr =
-            Array.of_seq (Seq.map (fun (a, b) -> (b, a)) (Hashtbl.to_seq classes))
-          in
-          Array.sort compare arr;
-          Array.iter begin fun (i, set) ->
-            Printf.eprintf "#%d -> %s\n"
-              i (string_of_indexset ~index:(Terminal.to_string grammar) set)
-          end arr;
-        );
         sentence
       )
   | focus ->
