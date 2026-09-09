@@ -1679,7 +1679,7 @@ let print_mode () =
           Production.lhs grammar prod
         | _ ->
           prerr_endline "Cannot locate entrypoint in derivation:";
-          Derivation_printer.output stderr (Derivation.print grammar der);
+          Derivation_printer.output stderr (Derivation.print grammar (fun _ -> "", "") der);
           prerr_newline ();
           assert false
       in
